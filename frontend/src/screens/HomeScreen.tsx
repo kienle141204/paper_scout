@@ -48,17 +48,12 @@ export default function HomeScreen({ conferences, onSearch, onOpenChat }: Props)
 
   return (
     <div className="fade-in flex-1">
-      <div className="w-full mx-auto px-7" style={{ maxWidth: 880, paddingTop: 76, paddingBottom: 80 }}>
+      <div className="w-full mx-auto px-4 sm:px-7 pt-10 sm:pt-[76px] pb-16 sm:pb-[80px]" style={{ maxWidth: 880 }}>
 
         {/* Hero */}
         <div className="text-center mb-9">
           <div className="eyebrow mb-4">Tra cứu paper hội nghị · AI</div>
-          <h1
-            style={{
-              fontSize: 49, lineHeight: 1.1, fontWeight: 600, letterSpacing: '-0.025em',
-              margin: '0 0 18px', color: 'var(--ink)',
-            }}
-          >
+          <h1 className="hero-title">
             Tìm đúng paper bạn cần,<br />không phải dịch từng abstract.
           </h1>
           <p style={{ fontSize: 17, color: 'var(--ink-2)', margin: '0 auto', maxWidth: 560, lineHeight: 1.55 }}>
@@ -83,7 +78,7 @@ export default function HomeScreen({ conferences, onSearch, onOpenChat }: Props)
               padding: '16px 16px 6px',
             }}
           />
-          <div className="flex items-center gap-2.5" style={{ padding: '8px 10px 9px' }}>
+          <div className="flex items-center flex-wrap gap-2" style={{ padding: '8px 10px 9px' }}>
             <button className="chip" style={{ height: 34, flexShrink: 0 }}>
               <Icon name="layers" size={14} />
               {confs.length ? `${confs.length} hội nghị` : 'Tất cả hội nghị'}
@@ -127,7 +122,7 @@ export default function HomeScreen({ conferences, onSearch, onOpenChat }: Props)
         {/* Year range */}
         <div className="mt-7">
           <div className="eyebrow mb-3">Khoảng năm</div>
-          <div className="flex items-center gap-3" style={{ maxWidth: 420 }}>
+          <div className="flex items-center gap-3 max-w-[420px]">
             <span className="mono" style={{ fontSize: 13, color: 'var(--ink-2)', width: 40 }}>{yearFrom}</span>
             <input
               type="range" min={MIN_YEAR} max={CURRENT_YEAR} value={yearFrom}

@@ -45,7 +45,7 @@ export default function SavedScreen({ savedPapers, onOpen, onToggleSave, onGoSea
 
   return (
     <div className="fade-in flex-1">
-      <div className="w-full mx-auto px-7" style={{ maxWidth: 880, paddingTop: 30, paddingBottom: 72 }}>
+      <div className="w-full mx-auto px-4 sm:px-7" style={{ maxWidth: 880, paddingTop: 30, paddingBottom: 72 }}>
 
         <div className="flex items-end justify-between mb-7 flex-wrap gap-3">
           <div>

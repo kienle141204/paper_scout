@@ -127,14 +127,14 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
 
   return (
     <div className="fade-in flex-1">
-      <div className="w-full mx-auto px-7" style={{ maxWidth: 1080, paddingTop: 22, paddingBottom: 72 }}>
+      <div className="w-full mx-auto px-4 sm:px-7 pb-[72px] md:pb-[72px]" style={{ maxWidth: 1080, paddingTop: 22 }}>
 
         {/* Back */}
         <button className="btn btn-ghost btn-sm mb-5" onClick={onBack} style={{ paddingLeft: 8 }}>
           <Icon name="arrowL" size={15} /> Quay lại kết quả
         </button>
 
-        <div className="flex gap-11 items-start">
+        <div className="flex flex-col md:flex-row md:gap-11 md:items-start">
 
           {/* ── Main ───────────────────────────────── */}
           <div className="flex-1 min-w-0">
@@ -147,13 +147,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
             </div>
 
             {/* English title */}
-            <h1
-              className="serif"
-              style={{
-                fontSize: 34, lineHeight: 1.2, fontWeight: 500,
-                letterSpacing: '-0.015em', margin: '0 0 10px', color: 'var(--ink)',
-              }}
-            >
+            <h1 className="serif detail-title">
               {paper.titleEn}
             </h1>
 
@@ -361,7 +355,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                     sandbox="allow-same-origin"
                     title="Phân tích paper"
                     style={{
-                      width: '100%', height: 620,
+                      width: '100%', height: 'clamp(300px, 60vh, 620px)',
                       border: '1px solid var(--border)',
                       borderRadius: 'var(--r)',
                     }}
@@ -417,7 +411,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
           </div>
 
           {/* ── Side panel ────────────────────────── */}
-          <aside style={{ width: 268, flexShrink: 0 }}>
+          <aside className="hidden md:block" style={{ width: 268, flexShrink: 0 }}>
             <div className="sticky" style={{ top: 76 }}>
               <div className="card" style={{ padding: 18 }}>
                 {paper.url && (
@@ -472,6 +466,45 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
               </div>
             </div>
           </aside>
+        </div>
+
+        {/* Mobile action bar — fixed bottom, desktop hidden */}
+        <div
+          className="md:hidden"
+          style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 30,
+            background: 'var(--surface)',
+            borderTop: '1px solid var(--border)',
+            padding: '10px 16px',
+            display: 'flex',
+            gap: 8,
+          }}
+        >
+          {paper.url && (
+            <a
+              href={paper.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-accent"
+              style={{ flex: 1 }}
+            >
+              <Icon name="download" size={15} /> PDF
+            </a>
+          )}
+          <button
+            className={`btn btn-sm ${saved ? 'btn-primary' : 'btn-outline'}`}
+            onClick={(e) => { e.stopPropagation(); onToggleSave() }}
+            style={{ minWidth: 44 }}
+          >
+            <Icon name="bookmark" size={14} style={{ fill: saved ? 'currentColor' : 'none' }} />
+          </button>
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={copyCitation}
+            style={{ minWidth: 44 }}
+          >
+            <Icon name={copied ? 'check' : 'ext'} size={14} />
+          </button>
         </div>
       </div>
     </div>

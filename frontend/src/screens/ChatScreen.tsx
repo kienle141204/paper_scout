@@ -291,7 +291,7 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
                     marginTop: 10,
                     display: 'grid',
                     gap: 8,
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))',
                   }}
                 >
                   {msg.papers.map((p) => (
@@ -380,7 +380,7 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
             className="flex items-center gap-2"
             style={{ padding: '6px 8px 8px', justifyContent: 'flex-end' }}
           >
-            <span className="muted" style={{ fontSize: 12, marginRight: 'auto' }}>
+            <span className="hidden sm:inline muted" style={{ fontSize: 12, marginRight: 'auto' }}>
               Enter để gửi · Shift+Enter xuống dòng
             </span>
             <button

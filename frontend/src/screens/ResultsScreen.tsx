@@ -1,7 +1,8 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Icon, CardSkeleton, ErrorBanner } from '../components/atoms'
 import ResultCard from '../components/ResultCard'
 import FilterSidebar from '../components/FilterSidebar'
+import FilterDrawer from '../components/FilterDrawer'
 import type { Paper, Conference, Filters, SortKey } from '../types/paper'
 
 interface Props {
@@ -33,6 +34,8 @@ export default function ResultsScreen({
   onOpen, onToggleSave, onOpenAdvanced, activeAdvCount, onRetry,
   hasMore, loadingMore, onLoadMore, correctedQuery,
 }: Props) {
+
+  const [filterOpen, setFilterOpen] = useState(false)
 
   const filtered = useMemo(() => {
     let list = papers.filter((p) => {
@@ -67,7 +70,7 @@ export default function ResultsScreen({
 
   return (
     <div className="fade-in flex-1">
-      <div className="w-full mx-auto px-7" style={{ maxWidth: 'var(--maxw)', paddingTop: 26, paddingBottom: 60 }}>
+      <div className="w-full mx-auto px-4 sm:px-7" style={{ maxWidth: 'var(--maxw)', paddingTop: 26, paddingBottom: 60 }}>
 
         {/* Query header */}
         <div className="mb-6">
@@ -97,7 +100,16 @@ export default function ResultsScreen({
         </div>
 
         <div className="flex gap-9 items-start">
-          <FilterSidebar
+          <div className="hidden md:block">
+            <FilterSidebar
+              filters={filters} setFilters={setFilters}
+              conferences={conferences} paperCounts={paperCounts}
+              onOpenAdvanced={onOpenAdvanced} activeAdvCount={activeAdvCount}
+            />
+          </div>
+          <FilterDrawer
+            open={filterOpen}
+            onClose={() => setFilterOpen(false)}
             filters={filters} setFilters={setFilters}
             conferences={conferences} paperCounts={paperCounts}
             onOpenAdvanced={onOpenAdvanced} activeAdvCount={activeAdvCount}
@@ -106,13 +118,32 @@ export default function ResultsScreen({
           {/* Results column */}
           <div className="flex-1 min-w-0">
             {/* Sort bar */}
-            <div className="flex items-center justify-between mb-4">
-              <div style={{ fontSize: 13.5, color: 'var(--ink-2)' }}>
+            <div className="flex items-center gap-2 mb-4">
+              <button
+                className="btn btn-outline btn-sm flex md:hidden items-center gap-2"
+                onClick={() => setFilterOpen(true)}
+              >
+                <Icon name="filter" size={14} /> Bộ lọc
+                {activeAdvCount > 0 && (
+                  <span
+                    className="mono inline-grid place-items-center"
+                    style={{
+                      fontSize: 11, fontWeight: 500,
+                      background: 'var(--ink)', color: 'var(--bg)',
+                      borderRadius: 20, minWidth: 18, height: 18, padding: '0 5px',
+                    }}
+                  >
+                    {activeAdvCount}
+                  </span>
+                )}
+              </button>
+              <div className="hidden md:block" style={{ fontSize: 13.5, color: 'var(--ink-2)' }}>
                 {loading
                   ? <span className="skeleton inline-block" style={{ width: 100, height: 16 }} />
                   : <><b style={{ color: 'var(--ink)', fontWeight: 600 }}>{filtered.length}</b> paper liên quan</>
                 }
               </div>
+              <div className="flex-1" />
               <label className="flex items-center gap-2" style={{ fontSize: 13, color: 'var(--ink-2)' }}>
                 <Icon name="sort" size={14} /> Sắp xếp:
                 <select

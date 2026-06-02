@@ -23,6 +23,7 @@ const IC: Record<string, React.ReactElement> = {
   loader:   <path d="M8 2v2M8 12v2M2 8h2M12 8h2M3.8 3.8l1.4 1.4M10.8 10.8l1.4 1.4M3.8 12.2l1.4-1.4M10.8 5.2l1.4-1.4" />,
   warning:  <path d="M8 3L14 13H2L8 3zM8 8v2.5M8 12h.01" />,
   chat:     <path d="M2.5 3h11a1 1 0 011 1v6a1 1 0 01-1 1H9l-3 2.5V11H3.5a1 1 0 01-1-1V4a1 1 0 011-1z" />,
+  menu:     <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" />,
 }
 
 interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'stroke'> {
