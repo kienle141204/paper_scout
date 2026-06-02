@@ -14,6 +14,8 @@ COPY pyproject.toml ./
 # Install the agent package in editable mode so backend can import it
 RUN pip install --no-cache-dir -e . --no-deps
 
+ENV PYTHONPATH=/app
+
 WORKDIR /app/backend
 
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
