@@ -128,7 +128,7 @@ export async function parseQuery(query: string): Promise<ParsedQuery> {
     body: JSON.stringify({ query }),
   })
   if (!res.ok) {
-    return { keywords: query, venues: [], year_from: null, year_to: null, fallback: true }
+    return { keywords: query, keyword_variants: [], venues: [], year_from: null, year_to: null, corrected_query: null, fallback: true }
   }
   return res.json()
 }

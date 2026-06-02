@@ -10,7 +10,7 @@ interface Props {
   onChat: () => void
 }
 
-function navLink(href: string, handler: () => void, e: React.MouseEvent) {
+function navLink(_href: string, handler: () => void, e: React.MouseEvent) {
   e.preventDefault()
   handler()
 }
