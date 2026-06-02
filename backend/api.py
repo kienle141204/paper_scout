@@ -99,6 +99,11 @@ def root() -> dict[str, str]:
     return {"status": "ok", "docs": "/docs", "frontend": "http://localhost:5173"}
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 def _cfg(config_path: str | None) -> Any:
     return load_config(Path(config_path) if config_path else DEFAULT_CONFIG_PATH)
 
