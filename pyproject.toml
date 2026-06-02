@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-agent"
+version = "0.1.0"
+description = "Search conference papers and optionally translate abstracts to Vietnamese."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31.0",
+  "feedparser>=6.0.11",
+  "pypdf>=4.2.0",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+  "supabase>=2.0.0",
+]
+
+[project.scripts]
+paper-agent = "agent.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["agent", "backend"]
+
+[tool.setuptools.package-dir]
+"" = "."

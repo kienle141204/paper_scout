@@ -1,0 +1,264 @@
+import { useState, useEffect } from 'react'
+import { Icon, ConfTag, CiteCount, Relevance, SaveBtn } from '../components/atoms'
+import { viewPaper } from '../services/api'
+import type { Paper, Conference } from '../types/paper'
+
+interface Props {
+  paper: Paper
+  saved: boolean
+  related: Paper[]
+  conferences: Conference[]
+  onToggleSave: () => void
+  onBack: () => void
+  onOpen: (id: string) => void
+}
+
+export default function DetailScreen({ paper, saved, related, conferences, onToggleSave, onBack, onOpen }: Props) {
+  const [lang, setLang] = useState<'vi' | 'en'>('vi')
+  const [abstractVi, setAbstractVi] = useState<string | null>(paper.abstractVi ?? null)
+  const [translating, setTranslating] = useState(false)
+
+  useEffect(() => {
+    setAbstractVi(paper.abstractVi ?? null)
+    setTranslating(false)
+    viewPaper({
+      paper_id: paper.id,
+      title: paper.titleEn,
+      abstract: paper.abstractEn,
+      authors: paper.authors,
+      keywords: paper.keywords,
+      venue: paper.venue,
+      year: paper.year,
+      url: paper.url,
+      conference: paper.conf,
+    }).then((res) => {
+      if (res.abstract_vi) setAbstractVi(res.abstract_vi)
+    }).catch(() => {}).finally(() => setTranslating(false))
+    if (!paper.abstractVi) setTranslating(true)
+  }, [paper.id])
+
+  const confMeta = conferences.find((c) => c.id === paper.conf)
+
+  return (
+    <div className="fade-in flex-1">
+      <div className="w-full mx-auto px-7" style={{ maxWidth: 1080, paddingTop: 22, paddingBottom: 72 }}>
+
+        {/* Back */}
+        <button className="btn btn-ghost btn-sm mb-5" onClick={onBack} style={{ paddingLeft: 8 }}>
+          <Icon name="arrowL" size={15} /> Quay lại kết quả
+        </button>
+
+        <div className="flex gap-11 items-start">
+
+          {/* ── Main ───────────────────────────────── */}
+          <div className="flex-1 min-w-0">
+
+            {/* Meta row */}
+            <div className="flex items-center gap-3.5 mb-4 flex-wrap">
+              <ConfTag conf={paper.conf} year={paper.year} solid />
+              <CiteCount n={paper.citations} />
+              <Relevance value={paper.relevance} showLabel />
+            </div>
+
+            {/* English title */}
+            <h1
+              className="serif"
+              style={{
+                fontSize: 34, lineHeight: 1.2, fontWeight: 500,
+                letterSpacing: '-0.015em', margin: '0 0 10px', color: 'var(--ink)',
+              }}
+            >
+              {paper.titleEn}
+            </h1>
+
+            {/* Vietnamese title */}
+            {paper.titleVi && (
+              <p style={{ fontSize: 18, color: 'var(--ink-2)', margin: '0 0 18px', lineHeight: 1.42, fontStyle: 'italic' }}>
+                {paper.titleVi}
+              </p>
+            )}
+
+            {/* Authors */}
+            <div className="flex items-center gap-2 mb-6" style={{ color: 'var(--ink-2)', fontSize: 14.5 }}>
+              <Icon name="user" size={15} style={{ color: 'var(--ink-3)' }} />
+              {paper.authors.join(' · ')}
+            </div>
+
+            {/* Why relevant */}
+            <div
+              className="flex gap-3 mb-7"
+              style={{
+                padding: '13px 15px',
+                background: 'var(--accent-soft)',
+                border: '1px solid var(--accent-border)',
+                borderRadius: 'var(--r)',
+              }}
+            >
+              <Icon name="spark" size={16} style={{ color: 'var(--accent)', marginTop: 1, flexShrink: 0 }} />
+              <div style={{ fontSize: 13.5, color: 'var(--ink)', lineHeight: 1.5 }}>
+                <b style={{ fontWeight: 600 }}>Vì sao liên quan:</b> khớp{' '}
+                <b className="mono" style={{ color: 'var(--accent)' }}>{paper.relevance}%</b>{' '}
+                với truy vấn của bạn — trùng các khái niệm{' '}
+                <i>{paper.keywords.slice(0, 2).join(', ')}</i>.
+              </div>
+            </div>
+
+            {/* Key contributions */}
+            {paper.keyContributions && paper.keyContributions.length > 0 && (
+              <div className="mb-7">
+                <div className="eyebrow mb-3">Đóng góp chính</div>
+                <ul style={{ margin: 0, paddingLeft: 20, display: 'grid', gap: 8 }}>
+                  {paper.keyContributions.map((c, i) => (
+                    <li key={i} style={{ fontSize: 14.5, lineHeight: 1.55, color: 'var(--ink)' }}>{c}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Abstract section */}
+            <div className="flex items-center justify-between mb-3.5">
+              <h2 className="eyebrow" style={{ fontSize: 12, margin: 0 }}>Tóm tắt</h2>
+              <div
+                className="inline-flex"
+                style={{ background: 'var(--surface-3)', borderRadius: 7, padding: 3, gap: 2 }}
+              >
+                {(['vi', 'en'] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setLang(v)}
+                    style={{
+                      border: 0, borderRadius: 5, padding: '5px 11px',
+                      fontSize: 12.5, fontWeight: 500,
+                      background: lang === v ? 'var(--surface)' : 'transparent',
+                      color: lang === v ? 'var(--ink)' : 'var(--ink-3)',
+                      boxShadow: lang === v ? 'var(--shadow-sm)' : 'none',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {v === 'vi' ? 'Tiếng Việt' : 'English (gốc)'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {lang === 'vi' && translating ? (
+              <div className="flex items-center gap-2 muted" style={{ fontSize: 14, margin: '0 0 14px' }}>
+                <span className="skeleton inline-block" style={{ width: 18, height: 18, borderRadius: '50%' }} />
+                Đang dịch sang tiếng Việt…
+              </div>
+            ) : (
+              <p style={{ fontSize: 16, lineHeight: 1.78, color: 'var(--ink)', margin: '0 0 14px' }}>
+                {lang === 'vi' ? (abstractVi ?? paper.abstractEn ?? '—') : (paper.abstractEn ?? '—')}
+              </p>
+            )}
+
+            {lang === 'vi' && abstractVi && !translating && (
+              <div className="muted flex items-center gap-1.5" style={{ fontSize: 12 }}>
+                <Icon name="globe" size={13} />
+                Dịch tự động từ tiếng Anh — bấm "English (gốc)" để xem nguyên văn.
+              </div>
+            )}
+
+            {/* Figure placeholder */}
+            <div className="fig-ph" style={{ height: 230, marginTop: 28 }}>
+              [ teaser figure — biểu đồ / kết quả định tính ]
+            </div>
+
+            {/* Keywords */}
+            <div style={{ marginTop: 28 }}>
+              <div className="eyebrow mb-3">Từ khóa</div>
+              <div className="flex flex-wrap gap-2">
+                {paper.keywords.map((k) => (
+                  <span key={k} className="kw" style={{ fontSize: 13, padding: '5px 10px' }}>{k}</span>
+                ))}
+              </div>
+            </div>
+
+            {/* Related papers */}
+            {related.length > 0 && (
+              <div style={{ marginTop: 40, paddingTop: 28, borderTop: '1px solid var(--border)' }}>
+                <div className="eyebrow mb-4">Paper liên quan</div>
+                <div className="grid gap-2.5">
+                  {related.map((r) => (
+                    <button
+                      key={r.id}
+                      onClick={() => onOpen(r.id)}
+                      className="flex items-center gap-3.5 text-left w-full card"
+                      style={{ padding: '13px 15px', transition: 'all .14s', cursor: 'pointer' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--ink-3)' }}
+                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)' }}
+                    >
+                      <ConfTag conf={r.conf} year={r.year} />
+                      <span className="flex-1 min-w-0">
+                        <span
+                          className="serif block"
+                          style={{
+                            fontSize: 15.5, color: 'var(--ink)', fontWeight: 500,
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {r.titleEn}
+                        </span>
+                        {r.titleVi && <span className="muted" style={{ fontSize: 12.5 }}>{r.titleVi}</span>}
+                      </span>
+                      <span className="rel-num flex-none">{r.relevance}%</span>
+                      <Icon name="arrowR" size={15} style={{ color: 'var(--ink-4)', flexShrink: 0 }} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── Side panel ────────────────────────── */}
+          <aside style={{ width: 268, flexShrink: 0 }}>
+            <div className="sticky" style={{ top: 76 }}>
+              <div className="card" style={{ padding: 18 }}>
+                {paper.url && (
+                  <a
+                    href={paper.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-accent btn-block mb-2"
+                  >
+                    <Icon name="download" size={16} /> Tải PDF / Xem paper
+                  </a>
+                )}
+
+                <SaveBtn saved={saved} onClick={onToggleSave} label size="lg" />
+
+                {confMeta?.url && (
+                  <div className="mt-2">
+                    <a href={confMeta.url} target="_blank" rel="noopener noreferrer" className="btn btn-outline btn-block">
+                      <Icon name="ext" size={15} /> Trang gốc hội nghị
+                    </a>
+                  </div>
+                )}
+
+                {/* Metadata */}
+                <div style={{ borderTop: '1px solid var(--border)', marginTop: 16, paddingTop: 16, display: 'grid', gap: 13 }}>
+                  {([
+                    ['Hội nghị', paper.conf ? `${paper.conf} ${paper.year ?? ''}`.trim() : '—'],
+                    ['Trích dẫn', paper.citations != null ? paper.citations.toLocaleString('vi-VN') : '—'],
+                    ['Độ liên quan', `${paper.relevance}%`],
+                    ['Số tác giả', String(paper.authors.length)],
+                    ['PDF', paper.url ? 'Có sẵn' : 'Không rõ'],
+                  ] as [string, string][]).map(([k, v]) => (
+                    <div key={k} className="flex justify-between items-baseline gap-2" style={{ fontSize: 13 }}>
+                      <span className="muted whitespace-nowrap">{k}</span>
+                      <span className="mono whitespace-nowrap" style={{ color: 'var(--ink)', fontWeight: 500 }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="muted" style={{ fontSize: 11.5, marginTop: 14, lineHeight: 1.5, padding: '0 4px' }}>
+                Trích dẫn cập nhật từ chỉ mục công khai. Bản dịch tạo tự động, có thể chưa chính xác hoàn toàn.
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  )
+}

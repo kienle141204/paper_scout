@@ -1,0 +1,243 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens ──────────────────────────────── */
+:root {
+  --bg:             oklch(0.984 0.004 85);
+  --surface:        oklch(1 0 0);
+  --surface-2:      oklch(0.975 0.004 85);
+  --surface-3:      oklch(0.962 0.005 85);
+  --border:         oklch(0.908 0.005 85);
+  --border-strong:  oklch(0.84 0.006 85);
+  --ink:            oklch(0.245 0.012 75);
+  --ink-2:          oklch(0.45 0.01 75);
+  --ink-3:          oklch(0.60 0.008 75);
+  --ink-4:          oklch(0.72 0.006 75);
+  --accent:         oklch(0.485 0.094 248);
+  --accent-hover:   oklch(0.43 0.1 248);
+  --accent-soft:    oklch(0.955 0.022 248);
+  --accent-border:  oklch(0.88 0.04 248);
+
+  --r-sm: 6px;
+  --r:    9px;
+  --r-lg: 14px;
+  --shadow-sm: 0 1px 2px oklch(0.4 0.01 75 / 0.05), 0 1px 1px oklch(0.4 0.01 75 / 0.04);
+  --shadow:    0 2px 6px oklch(0.4 0.01 75 / 0.06), 0 8px 24px oklch(0.4 0.01 75 / 0.06);
+  --shadow-lg: 0 12px 40px oklch(0.3 0.01 75 / 0.14);
+  --maxw: 1180px;
+}
+
+/* ── Base ───────────────────────────────────────── */
+@layer base {
+  html, body { @apply m-0 p-0; background: var(--bg); }
+  body {
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection { background: var(--accent-soft); }
+  button { font-family: inherit; cursor: pointer; }
+  input, textarea { font-family: inherit; }
+  a { color: inherit; text-decoration: none; }
+
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--ink);
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+  }
+
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 20px;
+    border: 3px solid var(--bg);
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--ink-4); }
+}
+
+/* ── Component classes ─────────────────────────── */
+@layer components {
+  /* Typography helpers */
+  .eyebrow {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+  }
+  .serif  { font-family: 'Noto Serif', Georgia, serif; }
+  .mono   { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+  .muted  { color: var(--ink-3); }
+
+  /* Card */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* Chip */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 34px;
+    padding: 0 13px;
+    border-radius: 30px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-2);
+    transition: all 0.14s;
+    user-select: none;
+    cursor: pointer;
+  }
+  .chip:hover { border-color: var(--ink-3); color: var(--ink); }
+  .chip.active { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+
+  /* Conference tag */
+  .conf-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    color: var(--ink-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    padding: 2px 7px;
+    background: var(--surface-2);
+    text-transform: uppercase;
+  }
+  .conf-tag.solid {
+    background: var(--ink);
+    color: var(--bg);
+    border-color: var(--ink);
+  }
+
+  /* Keyword chip */
+  .kw {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--ink-2);
+    font-weight: 500;
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 8px;
+    transition: background 0.14s, color 0.14s;
+  }
+  .kw:hover { background: var(--accent-soft); color: var(--accent); }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 40px;
+    padding: 0 16px;
+    border-radius: var(--r-sm);
+    font-size: 14px;
+    font-weight: 500;
+    border: 1px solid transparent;
+    transition: background 0.14s, border-color 0.14s, color 0.14s, box-shadow 0.14s;
+    white-space: nowrap;
+  }
+  .btn svg { width: 16px; height: 16px; flex: none; }
+  .btn-primary { background: var(--ink); color: var(--bg); }
+  .btn-primary:hover { background: oklch(0.18 0.012 75); }
+  .btn-accent { background: var(--accent); color: white; }
+  .btn-accent:hover { background: var(--accent-hover); }
+  .btn-outline {
+    background: var(--surface);
+    border-color: var(--border-strong);
+    color: var(--ink);
+    box-shadow: var(--shadow-sm);
+  }
+  .btn-outline:hover { background: var(--surface-2); border-color: var(--ink-3); }
+  .btn-ghost { background: transparent; color: var(--ink-2); }
+  .btn-ghost:hover { background: var(--surface-3); color: var(--ink); }
+  .btn-sm { height: 32px; padding: 0 11px; font-size: 13px; border-radius: var(--r-sm); }
+  .btn-sm svg { width: 14px; height: 14px; }
+  .btn-block { width: 100%; }
+
+  /* Relevance bar */
+  .rel-bar {
+    width: 56px;
+    height: 5px;
+    border-radius: 4px;
+    background: var(--surface-3);
+    overflow: hidden;
+  }
+  .rel-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+  }
+  .rel-num {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  /* Figure placeholder */
+  .fig-ph {
+    background: repeating-linear-gradient(
+      135deg,
+      var(--surface-3) 0 11px,
+      var(--surface-2) 11px 22px
+    );
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    display: grid;
+    place-items: center;
+    color: var(--ink-3);
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.04em;
+  }
+
+  /* Scrim overlay */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: oklch(0.3 0.01 75 / 0.32);
+    backdrop-filter: blur(2px);
+    z-index: 60;
+  }
+
+  /* Fade-in animation */
+  .fade-in { animation: fadeIn 0.3s ease; }
+  @keyframes fadeIn {
+    from { transform: translateY(6px); }
+    to   { transform: none; }
+  }
+
+  /* Skeleton pulse */
+  .skeleton {
+    background: var(--surface-3);
+    border-radius: var(--r-sm);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.5; }
+  }
+}
