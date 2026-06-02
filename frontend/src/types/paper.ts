@@ -30,7 +30,6 @@ export interface Filters {
   author: string
   exclude: string
   minRel: number
-  oralOnly: boolean
 }
 
 export type SortKey = 'relevance' | 'citations' | 'year'
@@ -54,5 +53,4 @@ export const DEFAULT_FILTERS: Filters = {
   author: '',
   exclude: '',
   minRel: 0,
-  oralOnly: false,
 }

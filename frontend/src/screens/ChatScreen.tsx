@@ -230,15 +230,20 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
             <Icon name="arrowL" size={15} /> Tìm kiếm
           </button>
           <div style={{ flex: 1 }} />
-          <span
-            style={{
-              fontSize: 13,
-              color: 'var(--ink-3)',
-              fontWeight: 500,
+          <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 500 }}>Chat với AI</span>
+          <button
+            className="btn btn-ghost btn-sm"
+            title="Xóa hội thoại"
+            onClick={() => {
+              setMessages([{ role: 'assistant', content: 'Xin chào! Tôi có thể giúp bạn tìm paper học thuật. Bạn muốn tìm về chủ đề gì?' }])
+              setContext({ keywords: null, venues: [], year_from: null, year_to: null, papers_shown: [] })
+              setPapers([])
+              setFilterWarning(null)
             }}
+            style={{ color: 'var(--ink-3)' }}
           >
-            Chat với AI
-          </span>
+            <Icon name="close" size={14} /> Xóa
+          </button>
         </div>
 
         {/* Messages area */}

@@ -62,6 +62,40 @@ def upsert_paper(paper: dict[str, Any]) -> None:
         pass
 
 
+def get_cached_analysis(paper_id: str) -> str | None:
+    """Lấy HTML analysis report từ Supabase cache."""
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        res = (
+            client.table("paper_cache")
+            .select("analysis_html")
+            .eq("paper_id", paper_id)
+            .maybe_single()
+            .execute()
+        )
+        if res.data and res.data.get("analysis_html"):
+            return res.data["analysis_html"]
+        return None
+    except Exception:
+        return None
+
+
+def upsert_analysis(paper_id: str, html: str) -> None:
+    """Lưu HTML analysis report vào Supabase cache (cột analysis_html)."""
+    client = _get_client()
+    if not client:
+        return
+    try:
+        client.table("paper_cache").upsert(
+            {"paper_id": paper_id, "analysis_html": html},
+            on_conflict="paper_id",
+        ).execute()
+    except Exception:
+        pass
+
+
 def is_configured() -> bool:
     """Kiểm tra Supabase đã được cấu hình chưa."""
     return bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY"))

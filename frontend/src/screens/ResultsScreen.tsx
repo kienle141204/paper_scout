@@ -11,6 +11,7 @@ interface Props {
   error: string | null
   savedIds: string[]
   conferences: Conference[]
+  confError?: boolean
   filters: Filters
   setFilters: (f: Filters) => void
   sort: SortKey
@@ -20,12 +21,17 @@ interface Props {
   onOpenAdvanced: () => void
   activeAdvCount: number
   onRetry: () => void
+  hasMore?: boolean
+  loadingMore?: boolean
+  onLoadMore?: () => void
+  correctedQuery?: string | null
 }
 
 export default function ResultsScreen({
-  query, papers, loading, error, savedIds, conferences,
+  query, papers, loading, error, savedIds, conferences, confError,
   filters, setFilters, sort, setSort,
   onOpen, onToggleSave, onOpenAdvanced, activeAdvCount, onRetry,
+  hasMore, loadingMore, onLoadMore, correctedQuery,
 }: Props) {
 
   const filtered = useMemo(() => {
@@ -34,6 +40,7 @@ export default function ResultsScreen({
       if (p.year != null && (p.year < filters.years[0] || p.year > filters.years[1])) return false
       if ((p.citations ?? 0) < filters.minCite) return false
       if (p.relevance < (filters.minRel ?? 0)) return false
+      if (filters.hasPdf && !p.url) return false
       if (filters.author) {
         const q = filters.author.toLowerCase()
         if (!p.authors.join(' ').toLowerCase().includes(q)) return false
@@ -68,6 +75,25 @@ export default function ResultsScreen({
           <h1 style={{ fontSize: 27, fontWeight: 600, margin: 0, letterSpacing: '-0.02em', color: 'var(--ink)' }}>
             "{query}"
           </h1>
+          {correctedQuery && (
+            <div
+              className="flex items-start gap-2 mt-3"
+              style={{
+                fontSize: 13, lineHeight: 1.5,
+                color: 'var(--accent)',
+                background: 'var(--accent-soft)',
+                border: '1px solid var(--accent-border)',
+                borderRadius: 8, padding: '8px 12px',
+                maxWidth: 600,
+              }}
+            >
+              <Icon name="spark" size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+              <span>
+                <b style={{ fontWeight: 600 }}>Đã hiểu ý bạn:</b>{' '}
+                {correctedQuery}
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="flex gap-9 items-start">
@@ -125,6 +151,13 @@ export default function ResultsScreen({
               </div>
             )}
 
+            {/* Conf load error */}
+            {confError && (
+              <div className="mb-4" style={{ fontSize: 13, color: 'var(--ink-3)', padding: '8px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                Không tải được danh sách hội nghị — bộ lọc hội nghị tạm thời không khả dụng.
+              </div>
+            )}
+
             {/* Results */}
             {!loading && !error && filtered.length > 0 && (
               <div className="grid gap-3.5">
@@ -136,6 +169,23 @@ export default function ResultsScreen({
                     onToggleSave={() => onToggleSave(p.id)}
                   />
                 ))}
+              </div>
+            )}
+
+            {/* Load more */}
+            {!loading && !error && hasMore && (
+              <div className="flex justify-center mt-6">
+                <button
+                  className="btn btn-ghost"
+                  onClick={onLoadMore}
+                  disabled={loadingMore}
+                  style={{ minWidth: 140 }}
+                >
+                  {loadingMore
+                    ? <><Icon name="loader" size={15} style={{ animation: 'spin 1s linear infinite' }} /> Đang tải…</>
+                    : <><Icon name="search" size={15} /> Tải thêm kết quả</>
+                  }
+                </button>
               </div>
             )}
           </div>

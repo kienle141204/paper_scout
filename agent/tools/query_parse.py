@@ -11,9 +11,11 @@ from .prompts import PARSE_QUERY, _KNOWN_VENUES
 @dataclass
 class ParsedQuery:
     keywords: str
+    keyword_variants: list[str] = field(default_factory=list)
     venues: list[str] = field(default_factory=list)
     year_from: int | None = None
     year_to: int | None = None
+    corrected_query: str | None = None
 
 
 def parse_query(
@@ -31,7 +33,6 @@ def parse_query(
         base_url=base_url,
     )
 
-    # Extract JSON from response (handles extra text)
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if not m:
         return ParsedQuery(keywords=query)
@@ -45,12 +46,21 @@ def parse_query(
     raw_venues = data.get("venues") or []
     venues = [v for v in raw_venues if v in _KNOWN_VENUES]
 
+    raw_variants = data.get("keyword_variants") or []
+    keyword_variants = [v for v in raw_variants if isinstance(v, str) and v.strip()][:2]
+
     year_from = data.get("year_from")
     year_to = data.get("year_to")
 
+    corrected_query = data.get("corrected_query") or None
+    if isinstance(corrected_query, str):
+        corrected_query = corrected_query.strip() or None
+
     return ParsedQuery(
         keywords=keywords,
+        keyword_variants=keyword_variants,
         venues=venues,
         year_from=int(year_from) if year_from else None,
         year_to=int(year_to) if year_to else None,
+        corrected_query=corrected_query,
     )

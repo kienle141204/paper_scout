@@ -145,11 +145,7 @@ export default function AdvancedFilters({ filters, setFilters, conferences, onCl
           <div className="flex gap-4 flex-wrap">
             <label className="flex items-center gap-2 cursor-pointer" style={{ fontSize: 14 }}>
               <input type="checkbox" checked={local.hasPdf} onChange={(e) => set({ hasPdf: e.target.checked })} />
-              Chỉ paper có PDF
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer" style={{ fontSize: 14 }}>
-              <input type="checkbox" checked={local.oralOnly} onChange={(e) => set({ oralOnly: e.target.checked })} />
-              Chỉ Oral / Highlight
+              Chỉ paper có PDF / URL
             </label>
           </div>
         </div>

@@ -8,6 +8,38 @@ interface Props {
   onGoSearch: () => void
 }
 
+function exportBibTeX(papers: Paper[]) {
+  const entries = papers.map((p) => {
+    const key = `${(p.authors[0] ?? 'unknown').split(' ').pop()?.toLowerCase() ?? 'unknown'}${p.year ?? ''}`
+    const authors = p.authors.join(' and ')
+    return `@article{${key},\n  title={${p.titleEn}},\n  author={${authors}},\n  year={${p.year ?? ''}},\n  booktitle={${p.conf ?? p.venue ?? ''}},\n  url={${p.url ?? ''}}\n}`
+  })
+  const blob = new Blob([entries.join('\n\n')], { type: 'text/plain' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = 'paperscout_library.bib'
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function exportCSV(papers: Paper[]) {
+  const header = 'Title,Authors,Year,Conference,Citations,URL'
+  const rows = papers.map((p) => [
+    `"${p.titleEn.replace(/"/g, '""')}"`,
+    `"${p.authors.join('; ').replace(/"/g, '""')}"`,
+    p.year ?? '',
+    p.conf ?? p.venue ?? '',
+    p.citations ?? '',
+    p.url ?? '',
+  ].join(','))
+  const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = 'paperscout_library.csv'
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
 export default function SavedScreen({ savedPapers, onOpen, onToggleSave, onGoSearch }: Props) {
   const confCount = new Set(savedPapers.map((p) => p.conf).filter(Boolean)).size
 
@@ -23,9 +55,17 @@ export default function SavedScreen({ savedPapers, onOpen, onToggleSave, onGoSea
             </h1>
           </div>
           {savedPapers.length > 0 && (
-            <span className="mono muted" style={{ fontSize: 13 }}>
-              {savedPapers.length} paper · {confCount} hội nghị
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="mono muted" style={{ fontSize: 13 }}>
+                {savedPapers.length} paper · {confCount} hội nghị
+              </span>
+              <button className="btn btn-ghost btn-sm" onClick={() => exportBibTeX(savedPapers)}>
+                <Icon name="download" size={14} /> BibTeX
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => exportCSV(savedPapers)}>
+                <Icon name="download" size={14} /> CSV
+              </button>
+            </div>
           )}
         </div>
 

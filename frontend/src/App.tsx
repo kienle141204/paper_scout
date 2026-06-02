@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import NavBar from './components/NavBar'
 import AdvancedFilters from './components/AdvancedFilters'
 import HomeScreen from './screens/HomeScreen'
@@ -11,8 +11,30 @@ import { DEFAULT_FILTERS } from './types/paper'
 import { getConferences, searchPapers, parseQuery } from './services/api'
 import type { SearchParams } from './services/api'
 
+function screenToUrl(screen: Screen, selectedId: string | null, query: string): string {
+  if (screen === 'detail' && selectedId) return `/detail/${encodeURIComponent(selectedId)}`
+  if (screen === 'results') return query ? `/results?q=${encodeURIComponent(query)}` : '/results'
+  if (screen === 'saved') return '/saved'
+  if (screen === 'chat') return '/chat'
+  return '/'
+}
+
+function parseInitialUrl(): { screen: Screen; selectedId: string | null } {
+  const path = window.location.pathname
+  if (path.startsWith('/detail/')) {
+    const id = decodeURIComponent(path.slice('/detail/'.length))
+    return { screen: 'detail', selectedId: id || null }
+  }
+  if (path === '/saved') return { screen: 'saved', selectedId: null }
+  if (path === '/chat') return { screen: 'chat', selectedId: null }
+  return { screen: 'home', selectedId: null }
+}
+
+// Parse URL once before component mounts (not inside render loop)
+const _INIT = parseInitialUrl()
+
 export default function App() {
-  const [screen, setScreen] = useState<Screen>('home')
+  const [screen, setScreen] = useState<Screen>(_INIT.screen)
   const [prevScreen, setPrevScreen] = useState<Screen>('results')
   const [query, setQuery] = useState('')
   const [papers, setPapers] = useState<Paper[]>([])
@@ -24,17 +46,53 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem('ps_saved_papers') ?? '{}') } catch { return {} }
   })
   const savedIds = useMemo(() => Object.keys(savedMap), [savedMap])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(_INIT.selectedId)
   const [chatPapersMap, setChatPapersMap] = useState<Record<string, Paper>>({})
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [conferences, setConferences] = useState<Conference[]>([])
+  const [confError, setConfError] = useState(false)
   const [lastSearchParams, setLastSearchParams] = useState<SearchParams | null>(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [correctedQuery, setCorrectedQuery] = useState<string | null>(null)
+
+  // ── URL / History routing ────────────────────────────────────────────────
+  const isPopping = useRef(false)
+  const isMounted = useRef(false)
+
+  // Sync URL when navigating
+  useEffect(() => {
+    if (isPopping.current) { isPopping.current = false; return }
+    const url = screenToUrl(screen, selectedId, query)
+    if (!isMounted.current) {
+      isMounted.current = true
+      window.history.replaceState({ screen, selectedId, query }, '', url)
+    } else {
+      window.history.pushState({ screen, selectedId, query }, '', url)
+    }
+    // query intentionally excluded: only push on navigation events (screen/selectedId change)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, selectedId])
+
+  // Handle browser back / forward
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const s = e.state as { screen?: Screen; selectedId?: string | null; query?: string } | null
+      if (!s?.screen) return
+      isPopping.current = true
+      setScreen(s.screen)
+      setSelectedId(s.selectedId ?? null)
+      if (s.query !== undefined) setQuery(s.query)
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
 
   // Load conferences on mount
   useEffect(() => {
     getConferences()
       .then(setConferences)
-      .catch(() => { /* fail silently — UI still works without conf metadata */ })
+      .catch(() => setConfError(true))
   }, [])
 
   // Scroll to top on screen / paper change
@@ -48,10 +106,15 @@ export default function App() {
     setLoading(true)
     setError(null)
     setPapers([])
+    setHasMore(false)
+    setCorrectedQuery(null)
     setScreen('results')
     try {
-      const result = await searchPapers(params)
+      const result = await searchPapers({ ...params, offset: 0 })
       setPapers(result.papers)
+      setHasMore(result.hasMore)
+      setCorrectedQuery(result.correctedQuery)
+      setLastSearchParams({ ...params, offset: result.papers.length })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Đã xảy ra lỗi không xác định.')
     } finally {
@@ -59,25 +122,45 @@ export default function App() {
     }
   }, [])
 
+  const loadMore = useCallback(async () => {
+    if (!lastSearchParams || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const result = await searchPapers(lastSearchParams)
+      setPapers((prev) => {
+        const existingIds = new Set(prev.map((p) => p.id))
+        const newPapers = result.papers.filter((p) => !existingIds.has(p.id))
+        return [...prev, ...newPapers]
+      })
+      setHasMore(result.hasMore)
+      setLastSearchParams((prev) => prev ? { ...prev, offset: (prev.offset ?? 0) + result.papers.length } : prev)
+    } catch {
+      // load more failure is non-critical — just hide the button
+      setHasMore(false)
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [lastSearchParams, loadingMore])
+
   const handleSearch = useCallback(
     async (args: { query: string; confs: string[]; yearFrom: number; yearTo: number }) => {
-      // Parse natural language query to extract keywords, venues, year
       const parsed = await parseQuery(args.query).catch(() => null)
 
       const keywords = parsed?.keywords ?? args.query
-      // Merge LLM-detected venues with manually selected conferences (deduplicated)
+      const keywordVariants = parsed?.keyword_variants ?? []
       const detectedVenues = parsed?.venues ?? []
       const mergedConfs = [...new Set([...args.confs, ...detectedVenues])]
-
       const yearFrom = parsed?.year_from ?? args.yearFrom
       const yearTo = parsed?.year_to ?? args.yearTo
 
       setFilters((f) => ({ ...f, confs: mergedConfs, years: [yearFrom, yearTo] }))
       runSearch({
         query: keywords,
+        keywordVariants,
         conferences: mergedConfs,
         yearFrom,
         yearTo,
+        correctedQuery: parsed?.corrected_query ?? null,
       })
     },
     [runSearch],
@@ -119,18 +202,20 @@ export default function App() {
   }, [prevScreen])
 
   const selected = useMemo(
-    () => papers.find((p) => p.id === selectedId) ?? (selectedId ? chatPapersMap[selectedId] ?? null : null),
-    [papers, selectedId, chatPapersMap],
+    () => papers.find((p) => p.id === selectedId)
+      ?? (selectedId ? chatPapersMap[selectedId] ?? savedMap[selectedId] ?? null : null),
+    [papers, selectedId, chatPapersMap, savedMap],
   )
 
   const related = useMemo(() => {
     if (!selected) return []
     const kws = new Set(selected.keywords.map((k) => k.toLowerCase()))
-    return papers
+    const pool = papers.length > 0 ? papers : Object.values(chatPapersMap)
+    return pool
       .filter((p) => p.id !== selected.id && p.keywords.some((k) => kws.has(k.toLowerCase())))
       .sort((a, b) => b.relevance - a.relevance)
       .slice(0, 3)
-  }, [selected, papers])
+  }, [selected, papers, chatPapersMap])
 
   const savedPapers = useMemo(() => Object.values(savedMap), [savedMap])
 
@@ -141,7 +226,6 @@ export default function App() {
     if (filters.minCite > 0) n++
     if (filters.minRel > 0) n++
     if (filters.hasPdf) n++
-    if (filters.oralOnly) n++
     return n
   }, [filters])
 
@@ -168,6 +252,7 @@ export default function App() {
           error={error}
           savedIds={savedIds}
           conferences={conferences}
+          confError={confError}
           filters={filters}
           setFilters={setFilters}
           sort={sort}
@@ -177,6 +262,10 @@ export default function App() {
           onOpenAdvanced={() => setAdvancedOpen(true)}
           activeAdvCount={activeAdvCount}
           onRetry={handleRetry}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          onLoadMore={loadMore}
+          correctedQuery={correctedQuery}
         />
       )}
 

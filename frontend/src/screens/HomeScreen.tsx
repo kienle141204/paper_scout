@@ -16,11 +16,24 @@ interface Props {
   onOpenChat: () => void
 }
 
+const HISTORY_KEY = 'ps_search_history'
+const MAX_HISTORY = 8
+
+function loadHistory(): string[] {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') } catch { return [] }
+}
+
+function saveHistory(query: string) {
+  const prev = loadHistory().filter((q) => q !== query)
+  localStorage.setItem(HISTORY_KEY, JSON.stringify([query, ...prev].slice(0, MAX_HISTORY)))
+}
+
 export default function HomeScreen({ conferences, onSearch, onOpenChat }: Props) {
   const [q, setQ] = useState('')
   const [confs, setConfs] = useState<string[]>([])
   const [yearFrom, setYearFrom] = useState(2022)
   const [yearTo, setYearTo] = useState(CURRENT_YEAR)
+  const [history, setHistory] = useState<string[]>(loadHistory)
 
   const toggleConf = (id: string) =>
     setConfs((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id]))
@@ -28,6 +41,8 @@ export default function HomeScreen({ conferences, onSearch, onOpenChat }: Props)
   const submit = (query?: string) => {
     const text = (query ?? q).trim()
     if (!text) return
+    saveHistory(text)
+    setHistory(loadHistory())
     onSearch({ query: text, confs, yearFrom, yearTo })
   }
 
@@ -128,6 +143,34 @@ export default function HomeScreen({ conferences, onSearch, onOpenChat }: Props)
             <span className="mono text-right" style={{ fontSize: 13, color: 'var(--ink-2)', width: 40 }}>{yearTo}</span>
           </div>
         </div>
+
+        {/* Search history */}
+        {history.length > 0 && (
+          <div className="mt-8">
+            <div className="flex items-center justify-between mb-3">
+              <div className="eyebrow">Tìm kiếm gần đây</div>
+              <button
+                className="btn btn-ghost btn-sm"
+                style={{ fontSize: 12, color: 'var(--ink-3)' }}
+                onClick={() => { localStorage.removeItem(HISTORY_KEY); setHistory([]) }}
+              >
+                Xóa lịch sử
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {history.map((h, i) => (
+                <button
+                  key={i}
+                  className="chip"
+                  onClick={() => { setQ(h); submit(h) }}
+                  style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  <Icon name="clock" size={13} /> {h}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Sample queries */}
         <div className="mt-10">

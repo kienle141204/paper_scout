@@ -10,6 +10,11 @@ interface Props {
   onChat: () => void
 }
 
+function navLink(href: string, handler: () => void, e: React.MouseEvent) {
+  e.preventDefault()
+  handler()
+}
+
 export default function NavBar({ screen, savedCount, query, onHome, onSaved, onChat }: Props) {
   const onInner = screen !== 'home'
 
@@ -27,10 +32,11 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
         style={{ maxWidth: 'var(--maxw)', height: 60 }}
       >
         {/* Wordmark */}
-        <button
+        <a
+          href="/"
+          onClick={(e) => navLink('/', onHome, e)}
           className="flex items-center gap-2 select-none flex-none"
-          onClick={onHome}
-          style={{ cursor: 'pointer' }}
+          style={{ cursor: 'pointer', textDecoration: 'none' }}
         >
           <span
             className="grid place-items-center flex-none"
@@ -44,46 +50,54 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
           <span style={{ fontWeight: 600, fontSize: 16.5, letterSpacing: '-0.01em', color: 'var(--ink)' }}>
             Paper<b>Scout</b>
           </span>
-        </button>
+        </a>
 
         {/* Compact search bar on inner pages */}
         {onInner && (
-          <button
-            onClick={onHome}
+          <a
+            href="/"
+            onClick={(e) => navLink('/', onHome, e)}
             className="flex items-center gap-2"
             style={{
               maxWidth: 360, flex: 1,
               border: '1px solid var(--border-strong)', borderRadius: 8,
               padding: '8px 12px', background: 'var(--surface)',
               cursor: 'text', color: 'var(--ink-2)', fontSize: 13.5,
+              textDecoration: 'none',
             }}
           >
             <Icon name="search" size={15} style={{ color: 'var(--ink-3)', flexShrink: 0 }} />
             <span className="overflow-hidden text-ellipsis whitespace-nowrap flex-1 text-left">
               {query || 'Tìm paper…'}
             </span>
-          </button>
+          </a>
         )}
 
         <div className="flex-1" />
 
         {/* Nav links */}
         <div className="flex items-center gap-1">
-          <button
-            className={`btn btn-ghost btn-sm${screen === 'home' ? ' bg-s3 text-ink' : ''}`}
-            onClick={onHome}
+          <a
+            href="/"
+            onClick={(e) => navLink('/', onHome, e)}
+            className={`btn btn-ghost btn-sm${screen === 'home' || screen === 'results' ? ' text-ink' : ''}`}
+            style={{ textDecoration: 'none' }}
           >
             <Icon name="search" size={15} /> Tìm kiếm
-          </button>
-          <button
-            className={`btn btn-ghost btn-sm${screen === 'chat' ? ' bg-s3 text-ink' : ''}`}
-            onClick={onChat}
+          </a>
+          <a
+            href="/chat"
+            onClick={(e) => navLink('/chat', onChat, e)}
+            className={`btn btn-ghost btn-sm${screen === 'chat' ? ' text-ink' : ''}`}
+            style={{ textDecoration: 'none' }}
           >
             <Icon name="chat" size={15} /> Chat AI
-          </button>
-          <button
-            className={`btn btn-ghost btn-sm relative${screen === 'saved' ? ' bg-s3 text-ink' : ''}`}
-            onClick={onSaved}
+          </a>
+          <a
+            href="/saved"
+            onClick={(e) => navLink('/saved', onSaved, e)}
+            className={`btn btn-ghost btn-sm relative${screen === 'saved' ? ' text-ink' : ''}`}
+            style={{ textDecoration: 'none' }}
           >
             <Icon name="bookmark" size={15} /> Đã lưu
             {savedCount > 0 && (
@@ -98,7 +112,7 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
                 {savedCount}
               </span>
             )}
-          </button>
+          </a>
         </div>
       </div>
     </nav>

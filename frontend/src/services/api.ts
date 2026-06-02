@@ -37,6 +37,8 @@ interface BackendSearchResponse {
   papers: BackendPaper[]
   total: number
   query: string
+  has_more?: boolean
+  corrected_query?: string | null
 }
 
 // ── Mappers ──────────────────────────────────────
@@ -99,18 +101,23 @@ export async function viewPaper(
 
 export interface SearchParams {
   query: string
+  keywordVariants?: string[]
   conferences: string[]
   yearFrom?: number
   yearTo?: number
   language?: string
   limit?: number
+  offset?: number
+  correctedQuery?: string | null
 }
 
 export interface ParsedQuery {
   keywords: string
+  keyword_variants: string[]
   venues: string[]
   year_from: number | null
   year_to: number | null
+  corrected_query: string | null
   fallback: boolean
 }
 
@@ -158,19 +165,65 @@ export async function chatWithAgent(req: ChatRequest): Promise<ChatResponse> {
   }
 }
 
+export interface AnalyzePaperParams {
+  paper_id: string
+  title: string
+  abstract?: string
+  authors?: string[]
+  keywords?: string[]
+  venue?: string
+  year?: number
+  url?: string
+  conference?: string
+}
+
+export async function analyzePaper(
+  params: AnalyzePaperParams,
+): Promise<{ html: string; from_cache: boolean }> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 90_000)
+  try {
+    const res = await fetch(`${BASE}/api/papers/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`
+      try {
+        const err: { detail?: string } = await res.json()
+        if (err.detail) detail = err.detail
+      } catch { /* empty */ }
+      throw new Error(detail)
+    }
+    return res.json()
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('Phân tích mất quá nhiều thời gian. Vui lòng thử lại.')
+    }
+    throw err
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
 export async function searchPapers(
   params: SearchParams,
-): Promise<{ papers: Paper[]; total: number; query: string }> {
+): Promise<{ papers: Paper[]; total: number; query: string; hasMore: boolean; correctedQuery: string | null }> {
   const res = await fetch(`${BASE}/api/papers/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       query: params.query,
+      keyword_variants: params.keywordVariants ?? [],
       conferences: params.conferences,
       year_from: params.yearFrom,
       year_to: params.yearTo,
       language: params.language ?? 'vi',
       limit: params.limit ?? 20,
+      offset: params.offset ?? 0,
+      corrected_query: params.correctedQuery ?? null,
     }),
   })
 
@@ -188,5 +241,7 @@ export async function searchPapers(
     papers: data.papers.map(mapPaper),
     total: data.total,
     query: data.query,
+    hasMore: data.has_more ?? false,
+    correctedQuery: data.corrected_query ?? null,
   }
 }

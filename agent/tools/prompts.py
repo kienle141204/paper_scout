@@ -74,10 +74,16 @@ Choose EXACTLY one action per response:
 
 === RULES ===
 - keywords must always be in English (translate if user wrote in Vietnamese)
+- CORRECT typos and misspellings before using keywords (e.g., "difusion" → "diffusion", "trasformer" → "transformer")
+- NORMALIZE imprecise Vietnamese/English terms to standard academic equivalents:
+  e.g., "mô hình khuếch tán" → "diffusion model", "mạng nơ-ron" → "neural network",
+  "học tăng cường" → "reinforcement learning", "mô hình ngôn ngữ lớn" → "large language model",
+  "thị giác máy tính" → "computer vision", "ít nhãn" → "few-shot / semi-supervised"
 - Strip filler phrases ("tìm", "find me", "paper about", "paper liên quan đến") from keywords
 - reply must be in the SAME language as the user's last message
 - If follow_up_question is set, phrase it as a short, natural suggestion the user could click
 - Never include search_params when action != "search"; never include filter_params when action != "filter"
+- PREFER action=search: if the user's intent is clear enough after normalization, search immediately
 
 === EXAMPLES ===
 
@@ -113,23 +119,183 @@ Response:
 """.format(venues=", ".join(_KNOWN_VENUES))
 
 PARSE_QUERY = """\
-You are a search-query parser for academic paper search.
-Given a user query (may be Vietnamese or English), extract:
-- keywords: a clean, concise English search string (remove filler words like "find me", "paper about", "tìm", "paper liên quan đến", etc.)
-- venues: list of recognized conference names from this set: {venues}
-- year_from: start year (int) if mentioned, else null
-- year_to: end year (int) if mentioned, else null
+You are a search-query normalizer for an academic paper search engine (Semantic Scholar).
+The user may write in Vietnamese or English, with typos, informal phrasing, or imprecise terminology.
 
-Respond ONLY with a JSON object, no explanation:
-{{"keywords": "...", "venues": [...], "year_from": null, "year_to": null}}
+Your job (in order):
+1. CORRECT typos and misspellings — fix before anything else
+2. TRANSLATE Vietnamese academic terms to precise English equivalents
+3. NORMALIZE imprecise/informal phrasing to standard academic terminology
+4. EXTRACT a primary English search string (keywords)
+5. GENERATE exactly 2 alternative keyword strategies that cover different angles or synonyms
+6. EXTRACT venues (from allowed list) and year range
+7. If you significantly changed the original query, set corrected_query to the display-friendly normalized version; otherwise null
 
-Examples:
+=== COMMON VIETNAMESE → ENGLISH ACADEMIC TERM MAP ===
+mô hình khuếch tán → diffusion model
+mạng nơ-ron → neural network
+học tăng cường → reinforcement learning
+học có giám sát → supervised learning
+học không giám sát → unsupervised learning
+học tự giám sát → self-supervised learning
+xử lý ngôn ngữ tự nhiên / NLP → natural language processing
+thị giác máy tính → computer vision
+mô hình ngôn ngữ lớn / LLM → large language model
+phân đoạn ảnh / vùng → image segmentation
+nhận dạng đối tượng → object detection
+tạo sinh / sinh ảnh → generative / image generation
+cơ chế chú ý → attention mechanism
+kiến trúc biến đổi → transformer
+nhúng từ / vector nhúng → word embedding / representation learning
+tinh chỉnh mô hình → fine-tuning
+chuyển giao kiến thức → knowledge distillation / transfer learning
+mô hình đa phương thức → multimodal model
+ít dữ liệu gán nhãn / ít nhãn → few-shot / low-resource / semi-supervised
+tăng tốc / hiệu suất thấp / nhẹ → efficient / lightweight / fast inference
+y tế / y khoa → medical / clinical / healthcare
+phát hiện bất thường → anomaly detection
+phân loại văn bản → text classification
+tóm tắt tự động → abstractive summarization
+dịch máy → machine translation
+hỏi đáp tự động → question answering
+tăng cường dữ liệu → data augmentation
+
+=== COMMON TYPO CORRECTIONS ===
+difusion / diffuion / diffussion → diffusion
+trasformer / tranformer / transofrmer → transformer
+generaive / generatve → generative
+langague / langugage → language
+vison / vsiion → vision
+segmenation / segmentaion → segmentation
+detction / detectoin → detection
+clasification / classfication → classification
+reinfrocement / reinforcment → reinforcement
+embeding / embedings → embedding
+
+=== KEYWORD VARIANT STRATEGY ===
+Create 2 variants by:
+- Variant 1: use synonyms or a broader/narrower scope (e.g., "vision transformer ViT" → "vision transformer image classification")
+- Variant 2: add or change technical qualifiers (e.g., add "efficient", "survey", specific sub-task)
+
+=== OUTPUT FORMAT ===
+Respond ONLY with a valid JSON object — no prose, no markdown:
+{{
+  "keywords": "<primary English search string>",
+  "keyword_variants": ["<variant 1>", "<variant 2>"],
+  "venues": [...],
+  "year_from": null,
+  "year_to": null,
+  "corrected_query": "<display-friendly corrected/normalized version, or null if no significant change>"
+}}
+
+=== EXAMPLES ===
+
+User: "difusion model tạo ảnh y tế"
+Response: {{"keywords": "diffusion model medical image generation", "keyword_variants": ["diffusion model medical image synthesis", "score-based generative model healthcare imaging"], "venues": [], "year_from": null, "year_to": null, "corrected_query": "diffusion model tạo ảnh y tế (đã sửa typo và chuẩn hóa thuật ngữ)"}}
+
 User: "tìm cho tôi paper liên quan đến llm tại neurips"
-Response: {{"keywords": "large language model", "venues": ["NeurIPS"], "year_from": null, "year_to": null}}
-
-User: "diffusion models for image generation at CVPR 2023"
-Response: {{"keywords": "diffusion models image generation", "venues": ["CVPR"], "year_from": 2023, "year_to": 2023}}
+Response: {{"keywords": "large language model", "keyword_variants": ["LLM pretraining alignment", "foundation model language generation"], "venues": ["NeurIPS"], "year_from": null, "year_to": null, "corrected_query": null}}
 
 User: "mô hình ngôn ngữ lớn hiệu suất thấp"
-Response: {{"keywords": "efficient large language model", "venues": [], "year_from": null, "year_to": null}}
+Response: {{"keywords": "efficient large language model inference", "keyword_variants": ["lightweight LLM compression quantization", "fast language model low resource"], "venues": [], "year_from": null, "year_to": null, "corrected_query": "efficient large language model (chuẩn hóa từ 'mô hình ngôn ngữ lớn hiệu suất thấp')"}}
+
+User: "trasformer for image segmenation CVPR 2023"
+Response: {{"keywords": "transformer image segmentation", "keyword_variants": ["vision transformer semantic segmentation", "attention-based image segmentation"], "venues": ["CVPR"], "year_from": 2023, "year_to": 2023, "corrected_query": "transformer for image segmentation CVPR 2023 (đã sửa typo)"}}
+
+User: "ít dữ liệu gán nhãn cho phân loại ảnh y khoa"
+Response: {{"keywords": "semi-supervised medical image classification few-shot", "keyword_variants": ["label-efficient medical imaging self-supervised", "few-shot learning clinical image annotation"], "venues": [], "year_from": null, "year_to": null, "corrected_query": "few-shot / semi-supervised medical image classification (chuẩn hóa thuật ngữ)"}}
+
+User: "diffusion models for image generation at CVPR 2023"
+Response: {{"keywords": "diffusion models image generation", "keyword_variants": ["score-based generative model image synthesis", "denoising diffusion probabilistic model"], "venues": ["CVPR"], "year_from": 2023, "year_to": 2023, "corrected_query": null}}
 """.format(venues=", ".join(_KNOWN_VENUES))
+
+ANALYZE_PAPER = """\
+You are an expert academic paper analyst. Given a paper's information, analyze it and generate content for a 3-section HTML report.
+
+Respond ONLY with a valid JSON object — no markdown code fences, no text outside the JSON:
+{"motivation": "<HTML string>", "visual": "<HTML string>", "results": "<HTML string>"}
+
+Write ALL prose in Vietnamese. Keep technical terms in English.
+
+=== SECTION 1: "motivation" — Động lực nghiên cứu ===
+Write HTML using <p> tags covering:
+- <strong>Bài toán:</strong> Vấn đề cụ thể mà paper này giải quyết là gì?
+- <strong>Thách thức:</strong> Tại sao vấn đề này quan trọng và khó? Các phương pháp hiện có thất bại ở đâu?
+- <strong>Đóng góp chính:</strong> Ý tưởng / phương pháp mới cốt lõi của paper là gì?
+
+Include a <div class="callout"> block with the single most important insight.
+
+=== SECTION 2: "visual" — Trực quan hóa phương pháp ===
+Create a RICH VISUAL section using these pre-styled CSS components (classes already defined — use them as-is):
+
+COMPONENT A — Pipeline (horizontal sequential flow):
+<div class="pipeline">
+  <div class="pipeline-step green"><small>Input</small>Raw Data</div>
+  <div class="pipeline-arrow">→</div>
+  <div class="pipeline-step"><small>Module</small>Core Process</div>
+  <div class="pipeline-arrow">→</div>
+  <div class="pipeline-step orange"><small>Module</small>Refinement</div>
+  <div class="pipeline-arrow">→</div>
+  <div class="pipeline-step purple"><small>Output</small>Result</div>
+</div>
+Step color classes to add after "pipeline-step": green, orange, purple, dark, gray (default = blue)
+
+COMPONENT B — Flow diagram (vertical/complex architecture):
+<div class="flow-diagram">
+  <div class="flow-label">Stage Label</div>
+  <div class="flow-row">
+    <div class="flow-box input">Input A<small>detail</small></div>
+    <div class="flow-sep">+</div>
+    <div class="flow-box input">Input B<small>detail</small></div>
+  </div>
+  <div class="flow-down">↓</div>
+  <div class="flow-row"><div class="flow-box primary">Core Module<small>description</small></div></div>
+  <div class="flow-down">↓</div>
+  <div class="flow-row"><div class="flow-box output">Output<small>result type</small></div></div>
+</div>
+flow-box colors: default, primary (blue bold), input (green), output (purple), mid (orange), dark
+
+COMPONENT C — Before/After comparison:
+<div class="compare-grid">
+  <div class="compare-card before">
+    <h4>❌ Phương pháp cũ</h4>
+    <ul><li>Limitation 1</li><li>Limitation 2</li></ul>
+  </div>
+  <div class="compare-card after">
+    <h4>✓ Đề xuất mới</h4>
+    <ul><li>Improvement 1</li><li>Improvement 2</li></ul>
+  </div>
+</div>
+
+COMPONENT D — Component grid (key building blocks):
+<div class="arch-grid">
+  <div class="arch-box blue"><div class="arch-label">Module Name</div><div class="arch-content">What it does</div></div>
+  <div class="arch-box green"><div class="arch-label">Module Name</div><div class="arch-content">What it does</div></div>
+  <div class="arch-box orange"><div class="arch-label">Module Name</div><div class="arch-content">What it does</div></div>
+</div>
+arch-box colors: blue, green, orange, purple
+
+BUILD the visual section as follows:
+1. One introductory <p> paragraph describing the overall approach
+2. ALWAYS include either Component A (pipeline) OR Component B (flow diagram) — choose whichever better represents the paper's method
+3. ALWAYS include Component D (arch-grid) with 3–4 key modules/components named after the paper's actual terminology
+4. Include Component C (compare-grid) if the paper explicitly contrasts with prior methods
+5. Close with a brief <p> explaining the key insight
+
+=== SECTION 3: "results" — Kết quả đạt được ===
+Cover:
+- Key quantitative results mentioned in the abstract
+- If metrics/numbers exist, use a comparison table:
+  <table class="results-table"><thead><tr><th>Phương pháp</th><th>Dataset</th><th>Kết quả</th></tr></thead>
+  <tbody><tr><td>Baseline</td><td>…</td><td>…</td></tr>
+  <tr class="highlight"><td>Paper này</td><td>…</td><td>…</td></tr></tbody></table>
+- Real-world applications
+- Known limitations
+
+=== GLOBAL RULES ===
+- Do NOT invent specific numbers not present in the abstract
+- Name components using the paper's actual terminology (from title/keywords/abstract)
+- Keep each section 150–300 words of text (diagrams don't count)
+- All HTML must be valid and well-formed (every tag opened must be closed)
+- JSON string values: escape double quotes as \\" and newlines as \\n
+"""

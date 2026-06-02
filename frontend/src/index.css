@@ -63,6 +63,14 @@
   ::-webkit-scrollbar-thumb:hover { background: var(--ink-4); }
 }
 
+/* ── Keyframe animations ────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── KaTeX overrides ────────────────────────────── */
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+.katex { font-size: 1em; }
+.math-err { color: var(--ink-3); font-family: monospace; font-size: 0.9em; }
+
 /* ── Component classes ─────────────────────────── */
 @layer components {
   /* Typography helpers */

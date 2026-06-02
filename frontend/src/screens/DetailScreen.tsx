@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Icon, ConfTag, CiteCount, Relevance, SaveBtn } from '../components/atoms'
-import { viewPaper } from '../services/api'
+import RichText from '../components/RichText'
+import { viewPaper, analyzePaper } from '../services/api'
 import type { Paper, Conference } from '../types/paper'
 
 interface Props {
@@ -17,10 +18,39 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
   const [lang, setLang] = useState<'vi' | 'en'>('vi')
   const [abstractVi, setAbstractVi] = useState<string | null>(paper.abstractVi ?? null)
   const [translating, setTranslating] = useState(false)
+  const [translateError, setTranslateError] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [analyzeState, setAnalyzeState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [analysisHtml, setAnalysisHtml] = useState<string | null>(null)
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null)
 
   useEffect(() => {
     setAbstractVi(paper.abstractVi ?? null)
     setTranslating(false)
+    setTranslateError(false)
+    setAnalyzeError(null)
+
+    // Check localStorage for cached analysis first
+    try {
+      const cached = localStorage.getItem(`ps_analysis_${paper.id}`)
+      if (cached) {
+        const data = JSON.parse(cached) as { html?: string }
+        if (data.html) {
+          setAnalysisHtml(data.html)
+          setAnalyzeState('done')
+        } else {
+          setAnalysisHtml(null)
+          setAnalyzeState('idle')
+        }
+      } else {
+        setAnalysisHtml(null)
+        setAnalyzeState('idle')
+      }
+    } catch {
+      setAnalysisHtml(null)
+      setAnalyzeState('idle')
+    }
+
     viewPaper({
       paper_id: paper.id,
       title: paper.titleEn,
@@ -33,9 +63,65 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
       conference: paper.conf,
     }).then((res) => {
       if (res.abstract_vi) setAbstractVi(res.abstract_vi)
-    }).catch(() => {}).finally(() => setTranslating(false))
+    }).catch(() => setTranslateError(true)).finally(() => setTranslating(false))
     if (!paper.abstractVi) setTranslating(true)
   }, [paper.id])
+
+  const handleAnalyze = async () => {
+    setAnalyzeState('loading')
+    setAnalyzeError(null)
+    try {
+      const result = await analyzePaper({
+        paper_id: paper.id,
+        title: paper.titleEn,
+        abstract: paper.abstractEn,
+        authors: paper.authors,
+        keywords: paper.keywords,
+        venue: paper.venue,
+        year: paper.year,
+        url: paper.url,
+        conference: paper.conf,
+      })
+      setAnalysisHtml(result.html)
+      setAnalyzeState('done')
+      // Save to localStorage so next open skips LLM entirely
+      try {
+        localStorage.setItem(`ps_analysis_${paper.id}`, JSON.stringify({ html: result.html, ts: Date.now() }))
+      } catch { /* localStorage full — skip */ }
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : 'Đã xảy ra lỗi.')
+      setAnalyzeState('error')
+    }
+  }
+
+  const openAnalysis = () => {
+    if (!analysisHtml) return
+    const blob = new Blob([analysisHtml], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    window.open(url, '_blank')
+  }
+
+  const downloadAnalysis = () => {
+    if (!analysisHtml) return
+    const blob = new Blob([analysisHtml], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${paper.titleEn.slice(0, 60).replace(/[^a-zA-Z0-9\s-]/g, '')}.html`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const copyCitation = () => {
+    const authors = paper.authors.length > 0
+      ? (paper.authors.length > 3 ? `${paper.authors[0]} et al.` : paper.authors.join(', '))
+      : 'Unknown'
+    const citation = `${authors} (${paper.year ?? '?'}). ${paper.titleEn}. ${paper.conf ?? paper.venue ?? ''}`.trim()
+    navigator.clipboard.writeText(citation).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
 
   const confMeta = conferences.find((c) => c.id === paper.conf)
 
@@ -141,27 +227,147 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
               </div>
             </div>
 
+            {lang === 'vi' && translateError && (
+              <div className="flex items-center gap-2 mb-3" style={{
+                fontSize: 13, color: 'oklch(0.5 0.1 40)',
+                background: 'oklch(0.97 0.015 40)',
+                border: '1px solid oklch(0.85 0.06 40)',
+                borderRadius: 8, padding: '8px 12px',
+              }}>
+                <Icon name="globe" size={14} />
+                Không thể dịch tự động. Đang hiển thị bản gốc tiếng Anh.
+              </div>
+            )}
+
             {lang === 'vi' && translating ? (
               <div className="flex items-center gap-2 muted" style={{ fontSize: 14, margin: '0 0 14px' }}>
                 <span className="skeleton inline-block" style={{ width: 18, height: 18, borderRadius: '50%' }} />
                 Đang dịch sang tiếng Việt…
               </div>
             ) : (
-              <p style={{ fontSize: 16, lineHeight: 1.78, color: 'var(--ink)', margin: '0 0 14px' }}>
-                {lang === 'vi' ? (abstractVi ?? paper.abstractEn ?? '—') : (paper.abstractEn ?? '—')}
-              </p>
+              <RichText
+                text={lang === 'vi' ? (abstractVi ?? paper.abstractEn ?? '—') : (paper.abstractEn ?? '—')}
+                style={{ fontSize: 16, lineHeight: 1.78, color: 'var(--ink)', marginBottom: 14 }}
+              />
             )}
 
-            {lang === 'vi' && abstractVi && !translating && (
+            {lang === 'vi' && abstractVi && !translating && !translateError && (
               <div className="muted flex items-center gap-1.5" style={{ fontSize: 12 }}>
                 <Icon name="globe" size={13} />
                 Dịch tự động từ tiếng Anh — bấm "English (gốc)" để xem nguyên văn.
               </div>
             )}
 
-            {/* Figure placeholder */}
-            <div className="fig-ph" style={{ height: 230, marginTop: 28 }}>
-              [ teaser figure — biểu đồ / kết quả định tính ]
+            {/* Paper analysis section */}
+            <div style={{ marginTop: 28 }}>
+              {analyzeState === 'idle' && (
+                <button
+                  onClick={handleAnalyze}
+                  style={{
+                    width: '100%',
+                    minHeight: 180,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 10,
+                    padding: '28px 24px',
+                    border: '1.5px dashed var(--border-strong)',
+                    borderRadius: 'var(--r)',
+                    background: 'var(--surface)',
+                    cursor: 'pointer',
+                    transition: 'border-color 0.14s, background 0.14s',
+                    fontFamily: 'inherit',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--accent)'
+                    e.currentTarget.style.background = 'var(--accent-soft)'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--border-strong)'
+                    e.currentTarget.style.background = 'var(--surface)'
+                  }}
+                >
+                  <Icon name="spark" size={26} style={{ color: 'var(--ink-4)' }} />
+                  <div style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--ink-2)' }}>
+                    Phân tích paper với AI
+                  </div>
+                  <div style={{ fontSize: 13, color: 'var(--ink-3)', maxWidth: 360, lineHeight: 1.5, textAlign: 'center' }}>
+                    Tạo báo cáo về động lực nghiên cứu, trực quan hóa phương pháp và kết quả đạt được
+                  </div>
+                </button>
+              )}
+
+              {analyzeState === 'loading' && (
+                <div
+                  className="card flex items-center justify-center gap-3"
+                  style={{ minHeight: 180, color: 'var(--ink-2)', fontSize: 14.5 }}
+                >
+                  <Icon name="loader" size={18} style={{ animation: 'spin 1s linear infinite', color: 'var(--accent)' }} />
+                  Đang phân tích paper… (có thể mất 20–40 giây)
+                </div>
+              )}
+
+              {analyzeState === 'error' && (
+                <div
+                  className="card flex items-center gap-3"
+                  style={{
+                    minHeight: 100, padding: '18px 20px',
+                    color: 'oklch(0.5 0.1 40)',
+                    background: 'oklch(0.97 0.015 40)',
+                    border: '1px solid oklch(0.85 0.06 40)',
+                  }}
+                >
+                  <Icon name="globe" size={16} />
+                  <span className="flex-1" style={{ fontSize: 13.5 }}>
+                    {analyzeError || 'Không thể phân tích paper. Vui lòng thử lại.'}
+                  </span>
+                  <button
+                    className="btn btn-outline btn-sm"
+                    onClick={handleAnalyze}
+                    style={{ fontSize: 13 }}
+                  >
+                    Thử lại
+                  </button>
+                </div>
+              )}
+
+              {analyzeState === 'done' && analysisHtml && (
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="eyebrow" style={{ fontSize: 11 }}>Phân tích AI</span>
+                    <div className="flex gap-2">
+                      <button className="btn btn-outline btn-sm" onClick={openAnalysis}>
+                        <Icon name="ext" size={13} /> Mở đầy đủ
+                      </button>
+                      <button className="btn btn-outline btn-sm" onClick={downloadAnalysis}>
+                        <Icon name="download" size={13} /> Tải xuống
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        style={{ color: 'var(--ink-3)', fontSize: 12 }}
+                        onClick={() => {
+                          localStorage.removeItem(`ps_analysis_${paper.id}`)
+                          setAnalyzeState('idle')
+                          setAnalysisHtml(null)
+                        }}
+                      >
+                        Tạo lại
+                      </button>
+                    </div>
+                  </div>
+                  <iframe
+                    srcDoc={analysisHtml}
+                    sandbox="allow-same-origin"
+                    title="Phân tích paper"
+                    style={{
+                      width: '100%', height: 620,
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--r)',
+                    }}
+                  />
+                </div>
+              )}
             </div>
 
             {/* Keywords */}
@@ -226,6 +432,15 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                 )}
 
                 <SaveBtn saved={saved} onClick={onToggleSave} label size="lg" />
+
+                <button
+                  className="btn btn-outline btn-block mt-2"
+                  onClick={copyCitation}
+                  style={{ fontSize: 13 }}
+                >
+                  <Icon name={copied ? 'check' : 'ext'} size={14} />
+                  {copied ? 'Đã copy!' : 'Copy citation (APA)'}
+                </button>
 
                 {confMeta?.url && (
                   <div className="mt-2">
