@@ -23,8 +23,8 @@ interface Props {
   activeAdvCount: number
   onRetry: () => void
   hasMore?: boolean
-  loadingMore?: boolean
-  onLoadMore?: () => void
+  currentPage?: number
+  onGoToPage?: (page: number) => void
   correctedQuery?: string | null
 }
 
@@ -32,7 +32,7 @@ export default function ResultsScreen({
   query, papers, loading, error, savedIds, conferences, confError,
   filters, setFilters, sort, setSort,
   onOpen, onToggleSave, onOpenAdvanced, activeAdvCount, onRetry,
-  hasMore, loadingMore, onLoadMore, correctedQuery,
+  hasMore, currentPage, onGoToPage, correctedQuery,
 }: Props) {
 
   const [filterOpen, setFilterOpen] = useState(false)
@@ -203,19 +203,25 @@ export default function ResultsScreen({
               </div>
             )}
 
-            {/* Load more */}
-            {!loading && !error && hasMore && (
-              <div className="flex justify-center mt-6">
+            {/* Pagination */}
+            {!loading && !error && (filtered.length > 0 || (currentPage ?? 1) > 1) && (
+              <div className="flex items-center justify-center gap-3 mt-6">
                 <button
-                  className="btn btn-ghost"
-                  onClick={onLoadMore}
-                  disabled={loadingMore}
-                  style={{ minWidth: 140 }}
+                  className="btn btn-outline btn-sm"
+                  disabled={(currentPage ?? 1) <= 1}
+                  onClick={() => onGoToPage?.((currentPage ?? 1) - 1)}
                 >
-                  {loadingMore
-                    ? <><Icon name="loader" size={15} style={{ animation: 'spin 1s linear infinite' }} /> Đang tải…</>
-                    : <><Icon name="search" size={15} /> Tải thêm kết quả</>
-                  }
+                  ← Trang trước
+                </button>
+                <span style={{ fontSize: 13.5, color: 'var(--ink-2)', minWidth: 64, textAlign: 'center' }}>
+                  Trang {currentPage ?? 1}
+                </span>
+                <button
+                  className="btn btn-outline btn-sm"
+                  disabled={!hasMore}
+                  onClick={() => onGoToPage?.((currentPage ?? 1) + 1)}
+                >
+                  Trang sau →
                 </button>
               </div>
             )}

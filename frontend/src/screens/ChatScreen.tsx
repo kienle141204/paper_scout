@@ -5,6 +5,7 @@ import { chatWithAgent, searchPapers } from '../services/api'
 import { applyFilterParams } from '../utils/filterChat'
 import type { Conference, Paper } from '../types/paper'
 import type { ChatUIMessage, ChatContext, PaperSummary } from '../types/chat'
+import { useLanguage } from '../contexts/LanguageContext'
 
 interface Props {
   conferences: Conference[]
@@ -34,19 +35,22 @@ function TypingIndicator() {
   )
 }
 
-function SearchingIndicator() {
+function SearchingIndicator({ label }: { label: string }) {
   return (
     <div
       className="flex items-center gap-2"
       style={{ fontSize: 13, color: 'var(--ink-3)', padding: '4px 0' }}
     >
       <Icon name="loader" size={14} style={{ animation: 'spin 1s linear infinite' }} />
-      Đang tìm kiếm paper…
+      {label}
     </div>
   )
 }
 
 export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onToggleSave, onGoSearch }: Props) {
+  const { t } = useLanguage()
+  const ct = t.chat
+
   const sessionId = useRef(crypto.randomUUID())
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -54,7 +58,7 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
   const [messages, setMessages] = useState<ChatUIMessage[]>([
     {
       role: 'assistant',
-      content: 'Xin chào! Tôi có thể giúp bạn tìm paper học thuật. Bạn muốn tìm về chủ đề gì?',
+      content: ct.welcome,
     },
   ])
   const [context, setContext] = useState<ChatContext>({
@@ -150,7 +154,7 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
 
           const countMsg =
             newPapers.length === 0
-              ? 'Tôi không tìm được paper nào phù hợp. Bạn muốn thử với từ khóa khác không?'
+              ? ct.noResults
               : `Tìm được ${newPapers.length} paper. ${response.follow_up_question ?? ''}`
 
           setMessages((prev) => [
@@ -187,7 +191,7 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
         addAssistantMessage(response.reply)
       }
     },
-    [agentLoading, searchLoading, messages, context, papers],
+    [agentLoading, searchLoading, messages, context, papers, ct.noResults],
   )
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -227,22 +231,22 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
           style={{ padding: '18px 0 12px', borderBottom: '1px solid var(--border)' }}
         >
           <button className="btn btn-ghost btn-sm" onClick={onGoSearch}>
-            <Icon name="arrowL" size={15} /> Tìm kiếm
+            <Icon name="arrowL" size={15} /> {ct.goSearch}
           </button>
           <div style={{ flex: 1 }} />
-          <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 500 }}>Chat với AI</span>
+          <span style={{ fontSize: 13, color: 'var(--ink-3)', fontWeight: 500 }}>Chat AI</span>
           <button
             className="btn btn-ghost btn-sm"
-            title="Xóa hội thoại"
+            title="Clear chat"
             onClick={() => {
-              setMessages([{ role: 'assistant', content: 'Xin chào! Tôi có thể giúp bạn tìm paper học thuật. Bạn muốn tìm về chủ đề gì?' }])
+              setMessages([{ role: 'assistant', content: ct.welcome }])
               setContext({ keywords: null, venues: [], year_from: null, year_to: null, papers_shown: [] })
               setPapers([])
               setFilterWarning(null)
             }}
             style={{ color: 'var(--ink-3)' }}
           >
-            <Icon name="close" size={14} /> Xóa
+            <Icon name="close" size={14} />
           </button>
         </div>
 
@@ -324,7 +328,7 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
           )}
           {searchLoading && (
             <div style={{ paddingLeft: 4 }}>
-              <SearchingIndicator />
+              <SearchingIndicator label={ct.searching} />
             </div>
           )}
 
@@ -362,7 +366,7 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Nhập yêu cầu… (Enter để gửi, Shift+Enter xuống dòng)"
+            placeholder={ct.placeholder}
             rows={2}
             disabled={isLoading}
             className="w-full resize-none outline-none"
@@ -381,7 +385,7 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
             style={{ padding: '6px 8px 8px', justifyContent: 'flex-end' }}
           >
             <span className="hidden sm:inline muted" style={{ fontSize: 12, marginRight: 'auto' }}>
-              Enter để gửi · Shift+Enter xuống dòng
+              Enter to send · Shift+Enter new line
             </span>
             <button
               className="btn btn-accent"
@@ -394,7 +398,7 @@ export default function ChatScreen({ conferences: _conf, savedIds, onOpen, onTog
               ) : (
                 <Icon name="arrowR" size={15} />
               )}
-              Gửi
+              {ct.send}
             </button>
           </div>
         </div>

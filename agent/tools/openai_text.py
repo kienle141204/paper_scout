@@ -5,6 +5,8 @@ from typing import Any
 
 import requests
 
+_session = requests.Session()
+
 
 def _require_api_key() -> str:
     api_key = os.getenv("OPENAI_API_KEY")
@@ -47,7 +49,7 @@ def chat_complete(
         "messages": turn_messages,
         "temperature": temperature,
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=120)
+    resp = _session.post(url, headers=headers, json=payload, timeout=120)
     resp.raise_for_status()
     data = resp.json()
     return (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "").strip()

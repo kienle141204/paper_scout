@@ -1,11 +1,14 @@
 import { Icon, ConfTag, CiteCount, Authors } from '../components/atoms'
 import type { Paper } from '../types/paper'
+import { useAuth } from '../contexts/AuthContext'
+import { useLanguage } from '../contexts/LanguageContext'
 
 interface Props {
   savedPapers: Paper[]
   onOpen: (id: string) => void
   onToggleSave: (id: string) => void
   onGoSearch: () => void
+  onOpenAuth: () => void
 }
 
 function exportBibTeX(papers: Paper[]) {
@@ -40,7 +43,39 @@ function exportCSV(papers: Paper[]) {
   URL.revokeObjectURL(a.href)
 }
 
-export default function SavedScreen({ savedPapers, onOpen, onToggleSave, onGoSearch }: Props) {
+export default function SavedScreen({ savedPapers, onOpen, onToggleSave, onGoSearch, onOpenAuth }: Props) {
+  const { isLoggedIn } = useAuth()
+  const { t } = useLanguage()
+  const st = t.saved
+
+  // If not logged in, show a login-required state
+  if (!isLoggedIn) {
+    return (
+      <div className="fade-in flex-1">
+        <div className="card text-center" style={{ margin: '80px auto', maxWidth: 480, padding: '60px 40px' }}>
+          <div
+            className="grid place-items-center mx-auto mb-5"
+            style={{
+              width: 52, height: 52, borderRadius: 13,
+              background: 'var(--surface-3)', color: 'var(--ink-3)',
+            }}
+          >
+            <Icon name="lock" size={22} />
+          </div>
+          <h3 style={{ fontSize: 20, fontWeight: 600, margin: '0 0 10px', color: 'var(--ink)', letterSpacing: '-0.01em' }}>
+            {st.loginRequired.title}
+          </h3>
+          <p className="muted mx-auto" style={{ fontSize: 14.5, margin: '0 auto 22px', maxWidth: 360, lineHeight: 1.55 }}>
+            {st.loginRequired.desc}
+          </p>
+          <button className="btn btn-primary mx-auto" onClick={onOpenAuth}>
+            <Icon name="user" size={16} /> {st.loginRequired.cta}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   const confCount = new Set(savedPapers.map((p) => p.conf).filter(Boolean)).size
 
   return (
@@ -49,15 +84,15 @@ export default function SavedScreen({ savedPapers, onOpen, onToggleSave, onGoSea
 
         <div className="flex items-end justify-between mb-7 flex-wrap gap-3">
           <div>
-            <div className="eyebrow mb-2">Thư viện của bạn</div>
+            <div className="eyebrow mb-2">{st.eyebrow}</div>
             <h1 style={{ fontSize: 29, fontWeight: 600, margin: 0, letterSpacing: '-0.02em' }}>
-              Paper đã lưu
+              {st.title}
             </h1>
           </div>
           {savedPapers.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
               <span className="mono muted" style={{ fontSize: 13 }}>
-                {savedPapers.length} paper · {confCount} hội nghị
+                {st.nStats(savedPapers.length, confCount)}
               </span>
               <button className="btn btn-ghost btn-sm" onClick={() => exportBibTeX(savedPapers)}>
                 <Icon name="download" size={14} /> BibTeX
@@ -81,14 +116,13 @@ export default function SavedScreen({ savedPapers, onOpen, onToggleSave, onGoSea
               <Icon name="bookmark" size={22} />
             </div>
             <h3 style={{ fontSize: 20, fontWeight: 600, margin: '0 0 8px', color: 'var(--ink)', letterSpacing: '-0.01em' }}>
-              Chưa có paper nào được lưu
+              {st.empty.title}
             </h3>
             <p className="muted mx-auto" style={{ fontSize: 14.5, margin: '0 auto 22px', maxWidth: 360, lineHeight: 1.55 }}>
-              Bấm biểu tượng <Icon name="bookmark" size={13} style={{ verticalAlign: '-1px' }} /> trên mỗi kết
-              quả để lưu lại đọc sau. Paper đã lưu sẽ xuất hiện ở đây.
+              {st.empty.desc}
             </p>
             <button className="btn btn-primary mx-auto" onClick={onGoSearch}>
-              <Icon name="search" size={16} /> Bắt đầu tìm kiếm
+              <Icon name="search" size={16} /> {st.empty.cta}
             </button>
           </div>
         ) : (
@@ -120,7 +154,7 @@ export default function SavedScreen({ savedPapers, onOpen, onToggleSave, onGoSea
                 </div>
                 <button
                   onClick={(e) => { e.stopPropagation(); onToggleSave(p.id) }}
-                  title="Bỏ lưu"
+                  title={st.unsave}
                   className="btn btn-outline btn-sm flex-none"
                   style={{ width: 34, padding: 0 }}
                 >

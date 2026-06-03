@@ -5,6 +5,8 @@ from typing import Any
 
 import requests
 
+_session = requests.Session()
+
 
 def _api_key() -> str:
     key = os.getenv("OPENAI_API_KEY")
@@ -35,7 +37,7 @@ def embed_batch(
     url = f"{base}/embeddings"
     headers = {"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json"}
     payload: dict[str, Any] = {"model": model, "input": texts}
-    resp = requests.post(url, headers=headers, json=payload, timeout=120)
+    resp = _session.post(url, headers=headers, json=payload, timeout=120)
     resp.raise_for_status()
     data = resp.json()
     # API returns list sorted by "index" field

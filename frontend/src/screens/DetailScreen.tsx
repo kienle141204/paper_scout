@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
-import { Icon, ConfTag, CiteCount, Relevance, SaveBtn } from '../components/atoms'
+import { Icon, ConfTag, CiteCount, Relevance } from '../components/atoms'
 import RichText from '../components/RichText'
 import { viewPaper, analyzePaper } from '../services/api'
 import type { Paper, Conference } from '../types/paper'
+import { useLanguage } from '../contexts/LanguageContext'
+import { useAuth } from '../contexts/AuthContext'
 
 interface Props {
   paper: Paper
@@ -12,10 +14,15 @@ interface Props {
   onToggleSave: () => void
   onBack: () => void
   onOpen: (id: string) => void
+  onNeedAuth: () => void
 }
 
-export default function DetailScreen({ paper, saved, related, conferences, onToggleSave, onBack, onOpen }: Props) {
-  const [lang, setLang] = useState<'vi' | 'en'>('vi')
+export default function DetailScreen({ paper, saved, related, conferences, onToggleSave, onBack, onOpen, onNeedAuth }: Props) {
+  const { lang: langPref, t } = useLanguage()
+  const { isLoggedIn } = useAuth()
+  const dt = t.detail
+
+  const [lang, setLang] = useState<'vi' | 'en'>(langPref)
   const [abstractVi, setAbstractVi] = useState<string | null>(paper.abstractVi ?? null)
   const [translating, setTranslating] = useState(false)
   const [translateError, setTranslateError] = useState(false)
@@ -24,11 +31,29 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
   const [analysisHtml, setAnalysisHtml] = useState<string | null>(null)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
 
+  const fetchTranslation = () => {
+    setTranslating(true)
+    viewPaper({
+      paper_id: paper.id,
+      title: paper.titleEn,
+      abstract: paper.abstractEn,
+      authors: paper.authors,
+      keywords: paper.keywords,
+      venue: paper.venue,
+      year: paper.year,
+      url: paper.url,
+      conference: paper.conf,
+    }).then((res) => {
+      if (res.abstract_vi) setAbstractVi(res.abstract_vi)
+    }).catch(() => setTranslateError(true)).finally(() => setTranslating(false))
+  }
+
   useEffect(() => {
     setAbstractVi(paper.abstractVi ?? null)
     setTranslating(false)
     setTranslateError(false)
     setAnalyzeError(null)
+    setLang(langPref)
 
     // Check localStorage for cached analysis first
     try {
@@ -51,21 +76,20 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
       setAnalyzeState('idle')
     }
 
-    viewPaper({
-      paper_id: paper.id,
-      title: paper.titleEn,
-      abstract: paper.abstractEn,
-      authors: paper.authors,
-      keywords: paper.keywords,
-      venue: paper.venue,
-      year: paper.year,
-      url: paper.url,
-      conference: paper.conf,
-    }).then((res) => {
-      if (res.abstract_vi) setAbstractVi(res.abstract_vi)
-    }).catch(() => setTranslateError(true)).finally(() => setTranslating(false))
-    if (!paper.abstractVi) setTranslating(true)
-  }, [paper.id])
+    // Only auto-fetch translation if user prefers Vietnamese
+    if (langPref === 'vi' && !paper.abstractVi) {
+      fetchTranslation()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paper.id, langPref])
+
+  const handleSwitchToVi = () => {
+    setLang('vi')
+    // Lazy-fetch translation only when user clicks the VI tab
+    if (!abstractVi && !translating) {
+      fetchTranslation()
+    }
+  }
 
   const handleAnalyze = async () => {
     setAnalyzeState('loading')
@@ -89,7 +113,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
         localStorage.setItem(`ps_analysis_${paper.id}`, JSON.stringify({ html: result.html, ts: Date.now() }))
       } catch { /* localStorage full — skip */ }
     } catch (err) {
-      setAnalyzeError(err instanceof Error ? err.message : 'Đã xảy ra lỗi.')
+      setAnalyzeError(err instanceof Error ? err.message : dt.analyzeError)
       setAnalyzeState('error')
     }
   }
@@ -123,6 +147,14 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
     })
   }
 
+  const handleToggleSave = () => {
+    if (!isLoggedIn) {
+      onNeedAuth()
+      return
+    }
+    onToggleSave()
+  }
+
   const confMeta = conferences.find((c) => c.id === paper.conf)
 
   return (
@@ -131,7 +163,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
 
         {/* Back */}
         <button className="btn btn-ghost btn-sm mb-5" onClick={onBack} style={{ paddingLeft: 8 }}>
-          <Icon name="arrowL" size={15} /> Quay lại kết quả
+          <Icon name="arrowL" size={15} /> {dt.back}
         </button>
 
         <div className="flex flex-col md:flex-row md:gap-11 md:items-start">
@@ -197,27 +229,37 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
 
             {/* Abstract section */}
             <div className="flex items-center justify-between mb-3.5">
-              <h2 className="eyebrow" style={{ fontSize: 12, margin: 0 }}>Tóm tắt</h2>
+              <h2 className="eyebrow" style={{ fontSize: 12, margin: 0 }}>{dt.abstract}</h2>
               <div
                 className="inline-flex"
                 style={{ background: 'var(--surface-3)', borderRadius: 7, padding: 3, gap: 2 }}
               >
-                {(['vi', 'en'] as const).map((v) => (
-                  <button
-                    key={v}
-                    onClick={() => setLang(v)}
-                    style={{
-                      border: 0, borderRadius: 5, padding: '5px 11px',
-                      fontSize: 12.5, fontWeight: 500,
-                      background: lang === v ? 'var(--surface)' : 'transparent',
-                      color: lang === v ? 'var(--ink)' : 'var(--ink-3)',
-                      boxShadow: lang === v ? 'var(--shadow-sm)' : 'none',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {v === 'vi' ? 'Tiếng Việt' : 'English (gốc)'}
-                  </button>
-                ))}
+                <button
+                  onClick={() => setLang('en')}
+                  style={{
+                    border: 0, borderRadius: 5, padding: '5px 11px',
+                    fontSize: 12.5, fontWeight: 500,
+                    background: lang === 'en' ? 'var(--surface)' : 'transparent',
+                    color: lang === 'en' ? 'var(--ink)' : 'var(--ink-3)',
+                    boxShadow: lang === 'en' ? 'var(--shadow-sm)' : 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {dt.tabEn}
+                </button>
+                <button
+                  onClick={handleSwitchToVi}
+                  style={{
+                    border: 0, borderRadius: 5, padding: '5px 11px',
+                    fontSize: 12.5, fontWeight: 500,
+                    background: lang === 'vi' ? 'var(--surface)' : 'transparent',
+                    color: lang === 'vi' ? 'var(--ink)' : 'var(--ink-3)',
+                    boxShadow: lang === 'vi' ? 'var(--shadow-sm)' : 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {dt.tabVi}
+                </button>
               </div>
             </div>
 
@@ -229,14 +271,14 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                 borderRadius: 8, padding: '8px 12px',
               }}>
                 <Icon name="globe" size={14} />
-                Không thể dịch tự động. Đang hiển thị bản gốc tiếng Anh.
+                {dt.translateError}
               </div>
             )}
 
             {lang === 'vi' && translating ? (
               <div className="flex items-center gap-2 muted" style={{ fontSize: 14, margin: '0 0 14px' }}>
                 <span className="skeleton inline-block" style={{ width: 18, height: 18, borderRadius: '50%' }} />
-                Đang dịch sang tiếng Việt…
+                {dt.translating}
               </div>
             ) : (
               <RichText
@@ -248,7 +290,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
             {lang === 'vi' && abstractVi && !translating && !translateError && (
               <div className="muted flex items-center gap-1.5" style={{ fontSize: 12 }}>
                 <Icon name="globe" size={13} />
-                Dịch tự động từ tiếng Anh — bấm "English (gốc)" để xem nguyên văn.
+                {dt.autoTranslated}
               </div>
             )}
 
@@ -284,7 +326,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                 >
                   <Icon name="spark" size={26} style={{ color: 'var(--ink-4)' }} />
                   <div style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--ink-2)' }}>
-                    Phân tích paper với AI
+                    {dt.analyzeBtn}
                   </div>
                   <div style={{ fontSize: 13, color: 'var(--ink-3)', maxWidth: 360, lineHeight: 1.5, textAlign: 'center' }}>
                     Tạo báo cáo về động lực nghiên cứu, trực quan hóa phương pháp và kết quả đạt được
@@ -298,7 +340,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                   style={{ minHeight: 180, color: 'var(--ink-2)', fontSize: 14.5 }}
                 >
                   <Icon name="loader" size={18} style={{ animation: 'spin 1s linear infinite', color: 'var(--accent)' }} />
-                  Đang phân tích paper… (có thể mất 20–40 giây)
+                  {dt.analyzing}
                 </div>
               )}
 
@@ -314,14 +356,14 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                 >
                   <Icon name="globe" size={16} />
                   <span className="flex-1" style={{ fontSize: 13.5 }}>
-                    {analyzeError || 'Không thể phân tích paper. Vui lòng thử lại.'}
+                    {analyzeError || dt.analyzeError}
                   </span>
                   <button
                     className="btn btn-outline btn-sm"
                     onClick={handleAnalyze}
                     style={{ fontSize: 13 }}
                   >
-                    Thử lại
+                    {dt.regenerate}
                   </button>
                 </div>
               )}
@@ -332,10 +374,10 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                     <span className="eyebrow" style={{ fontSize: 11 }}>Phân tích AI</span>
                     <div className="flex gap-2">
                       <button className="btn btn-outline btn-sm" onClick={openAnalysis}>
-                        <Icon name="ext" size={13} /> Mở đầy đủ
+                        <Icon name="ext" size={13} /> {dt.openFull}
                       </button>
                       <button className="btn btn-outline btn-sm" onClick={downloadAnalysis}>
-                        <Icon name="download" size={13} /> Tải xuống
+                        <Icon name="download" size={13} /> {dt.download}
                       </button>
                       <button
                         className="btn btn-ghost btn-sm"
@@ -346,7 +388,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                           setAnalysisHtml(null)
                         }}
                       >
-                        Tạo lại
+                        {dt.regenerate}
                       </button>
                     </div>
                   </div>
@@ -366,7 +408,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
 
             {/* Keywords */}
             <div style={{ marginTop: 28 }}>
-              <div className="eyebrow mb-3">Từ khóa</div>
+              <div className="eyebrow mb-3">{dt.keywords}</div>
               <div className="flex flex-wrap gap-2">
                 {paper.keywords.map((k) => (
                   <span key={k} className="kw" style={{ fontSize: 13, padding: '5px 10px' }}>{k}</span>
@@ -377,7 +419,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
             {/* Related papers */}
             {related.length > 0 && (
               <div style={{ marginTop: 40, paddingTop: 28, borderTop: '1px solid var(--border)' }}>
-                <div className="eyebrow mb-4">Paper liên quan</div>
+                <div className="eyebrow mb-4">{dt.relatedPapers}</div>
                 <div className="grid gap-2.5">
                   {related.map((r) => (
                     <button
@@ -421,11 +463,17 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                     rel="noopener noreferrer"
                     className="btn btn-accent btn-block mb-2"
                   >
-                    <Icon name="download" size={16} /> Tải PDF / Xem paper
+                    <Icon name="download" size={16} /> {dt.viewOnline}
                   </a>
                 )}
 
-                <SaveBtn saved={saved} onClick={onToggleSave} label size="lg" />
+                <button
+                  className={`btn ${saved ? 'btn-primary' : 'btn-outline'} btn-block`}
+                  onClick={handleToggleSave}
+                >
+                  <Icon name="bookmark" size={16} style={{ fill: saved ? 'currentColor' : 'none' }} />
+                  {!isLoggedIn ? dt.loginToSave : saved ? dt.saved : dt.save}
+                </button>
 
                 <button
                   className="btn btn-outline btn-block mt-2"
@@ -433,13 +481,13 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                   style={{ fontSize: 13 }}
                 >
                   <Icon name={copied ? 'check' : 'ext'} size={14} />
-                  {copied ? 'Đã copy!' : 'Copy citation (APA)'}
+                  {copied ? dt.copied : dt.copyRef}
                 </button>
 
                 {confMeta?.url && (
                   <div className="mt-2">
                     <a href={confMeta.url} target="_blank" rel="noopener noreferrer" className="btn btn-outline btn-block">
-                      <Icon name="ext" size={15} /> Trang gốc hội nghị
+                      <Icon name="ext" size={15} /> {dt.viewOnline}
                     </a>
                   </div>
                 )}
@@ -470,13 +518,12 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
 
         {/* Mobile action bar — fixed bottom, desktop hidden */}
         <div
-          className="md:hidden"
+          className="flex md:hidden"
           style={{
             position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 30,
             background: 'var(--surface)',
             borderTop: '1px solid var(--border)',
             padding: '10px 16px',
-            display: 'flex',
             gap: 8,
           }}
         >
@@ -493,7 +540,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
           )}
           <button
             className={`btn btn-sm ${saved ? 'btn-primary' : 'btn-outline'}`}
-            onClick={(e) => { e.stopPropagation(); onToggleSave() }}
+            onClick={(e) => { e.stopPropagation(); handleToggleSave() }}
             style={{ minWidth: 44 }}
           >
             <Icon name="bookmark" size={14} style={{ fill: saved ? 'currentColor' : 'none' }} />

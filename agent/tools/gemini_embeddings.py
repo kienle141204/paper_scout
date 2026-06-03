@@ -5,6 +5,8 @@ from typing import Any
 
 import requests
 
+_session = requests.Session()
+
 
 def embed(
     *,
@@ -20,7 +22,7 @@ def embed(
     url = f"{base}/models/{model}:embedContent"
     params = {"key": api_key}
     payload: dict[str, Any] = {"content": {"parts": [{"text": text}]}}
-    resp = requests.post(url, params=params, json=payload, timeout=120)
+    resp = _session.post(url, params=params, json=payload, timeout=120)
     resp.raise_for_status()
     data = resp.json()
     vec = (data.get("embedding") or {}).get("values") or []

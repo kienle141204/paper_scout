@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -8,10 +11,44 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
-from fastapi import FastAPI, HTTPException
+import bcrypt as _bcrypt_lib
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from jose import JWTError, jwt as _jwt
 from pydantic import BaseModel, Field
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+
+# ── JWT / Auth helpers ────────────────────────────────────────────────────────
+
+_JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-in-prod")
+_JWT_ALGORITHM = "HS256"
+_JWT_EXPIRE_DAYS = 30
+
+
+def _hash_password(plain: str) -> str:
+    return _bcrypt_lib.hashpw(plain.encode("utf-8"), _bcrypt_lib.gensalt()).decode("utf-8")
+
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    return _bcrypt_lib.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
+
+def _create_token(user_id: str, email: str) -> str:
+    exp = datetime.now(timezone.utc) + timedelta(days=_JWT_EXPIRE_DAYS)
+    return _jwt.encode({"sub": user_id, "email": email, "exp": exp}, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
+
+
+def _decode_token(token: str) -> dict:
+    return _jwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
+
+
+def _get_current_user(authorization: str = Header(...)) -> dict:
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+    try:
+        return _decode_token(authorization[7:])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 from agent.config import DEFAULT_CONFIG_PATH, load_config
 from agent.tools.abstract_tools import summarize_abstract, translate_abstract_vi
@@ -85,6 +122,9 @@ def _normalize_venue(venue: str | None) -> str | None:
 
 app = FastAPI(title="paper-agent-backend")
 
+# Background thread pool for fire-and-forget tasks (e.g. Supabase cache writes)
+_bg_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bg_")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -104,7 +144,161 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def _cfg(config_path: str | None) -> Any:
+# ── Supabase client for auth (separate from paper_cache singleton) ─────────────
+
+def _supabase_client():
+    """Return a Supabase client for auth operations using service role key (bypasses RLS).
+    Falls back to anon key if service role key is not set — in that case run:
+      ALTER TABLE app_users DISABLE ROW LEVEL SECURITY;
+    in the Supabase SQL editor.
+    """
+    url = os.environ.get("SUPABASE_URL")
+    # Service role key bypasses RLS — required for server-side auth operations
+    key = (
+        os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_ANON_KEY")
+        or os.environ.get("SUPABASE_KEY")
+    )
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+# ── Auth Pydantic models ──────────────────────────────────────────────────────
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    display_name: str | None = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class UpdateMeRequest(BaseModel):
+    language_pref: Literal['en', 'vi'] | None = None
+    display_name: str | None = None
+
+
+# ── Auth endpoints ────────────────────────────────────────────────────────────
+
+@app.post("/auth/register")
+def auth_register(req: RegisterRequest) -> dict:
+    if '@' not in req.email or len(req.email) < 5:
+        raise HTTPException(400, "Invalid email")
+    if len(req.password) < 8:
+        raise HTTPException(400, "Password too short")
+
+    client = _supabase_client()
+    if not client:
+        raise HTTPException(503, "Database not configured")
+
+    existing = client.table("app_users").select("id").eq("email", req.email.lower()).execute()
+    if existing.data:
+        raise HTTPException(409, "Email already registered")
+
+    hashed = _hash_password(req.password)
+    result = client.table("app_users").insert({
+        "email": req.email.lower(),
+        "password_hash": hashed,
+        "display_name": req.display_name,
+        "language_pref": "en",
+    }).execute()
+
+    user = result.data[0]
+    token = _create_token(user["id"], user["email"])
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "display_name": user.get("display_name"),
+            "language_pref": user.get("language_pref", "en"),
+        }
+    }
+
+
+@app.post("/auth/login")
+def auth_login(req: LoginRequest) -> dict:
+    client = _supabase_client()
+    if not client:
+        raise HTTPException(503, "Database not configured")
+
+    result = client.table("app_users").select("*").eq("email", req.email.lower()).execute()
+    if not result.data:
+        raise HTTPException(401, "Invalid credentials")
+
+    user = result.data[0]
+    if not _verify_password(req.password, user["password_hash"]):
+        raise HTTPException(401, "Invalid credentials")
+
+    token = _create_token(user["id"], user["email"])
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "display_name": user.get("display_name"),
+            "language_pref": user.get("language_pref", "en"),
+        }
+    }
+
+
+@app.get("/auth/me")
+def auth_me(current_user: dict = Depends(_get_current_user)) -> dict:
+    client = _supabase_client()
+    if not client:
+        raise HTTPException(503, "Database not configured")
+
+    result = client.table("app_users").select("id,email,display_name,language_pref").eq("id", current_user["sub"]).execute()
+    if not result.data:
+        raise HTTPException(404, "User not found")
+
+    user = result.data[0]
+    return {
+        "id": user["id"],
+        "email": user["email"],
+        "display_name": user.get("display_name"),
+        "language_pref": user.get("language_pref", "en"),
+    }
+
+
+@app.patch("/auth/me")
+def auth_update_me(req: UpdateMeRequest, current_user: dict = Depends(_get_current_user)) -> dict:
+    client = _supabase_client()
+    if not client:
+        raise HTTPException(503, "Database not configured")
+
+    updates: dict = {}
+    if req.language_pref is not None:
+        updates["language_pref"] = req.language_pref
+    if req.display_name is not None:
+        updates["display_name"] = req.display_name
+
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+
+    result = client.table("app_users").update(updates).eq("id", current_user["sub"]).execute()
+    if not result.data:
+        raise HTTPException(404, "User not found")
+
+    user = result.data[0]
+    return {
+        "id": user["id"],
+        "email": user["email"],
+        "display_name": user.get("display_name"),
+        "language_pref": user.get("language_pref", "en"),
+    }
+
+
+@lru_cache(maxsize=8)
+def _cfg(config_path: str | None = None) -> Any:
     return load_config(Path(config_path) if config_path else DEFAULT_CONFIG_PATH)
 
 
@@ -209,7 +403,7 @@ def api_papers_view(req: PaperViewRequest) -> dict[str, Any]:
     if req.abstract:
         try:
             provider = cfg.llm_provider
-            model = cfg.openai_model if provider == "openai" else cfg.gemini_model
+            model = cfg.openai_cheap_model if provider == "openai" else cfg.gemini_cheap_model
             base_url = cfg.openai_base_url if provider == "openai" else cfg.gemini_base_url
             abstract_vi = translate_abstract_vi(
                 text=req.abstract, provider=provider, model=model, base_url=base_url
@@ -217,8 +411,8 @@ def api_papers_view(req: PaperViewRequest) -> dict[str, Any]:
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Lỗi dịch: {e}")
 
-    # 3. Lưu vào Supabase (fire-and-forget, lỗi không ảnh hưởng response)
-    upsert_paper({
+    # 3. Lưu vào Supabase (truly fire-and-forget — không block HTTP response)
+    _bg_pool.submit(upsert_paper, {
         "paper_id": req.paper_id,
         "title": req.title,
         "abstract_en": req.abstract,
@@ -365,6 +559,53 @@ body { background: var(--bg); color: var(--ink); font-family: 'Inter', system-ui
 .arch-box.orange .arch-label { color: var(--s2-clr); }
 .arch-box.purple .arch-label { color: var(--s3-clr); }
 .arch-content { font-size: 13px; color: var(--ink-2); line-height: 1.55; }
+/* ── Timeline ──────────────────────────────── */
+.timeline { margin: 18px 0; padding-left: 0; list-style: none; border-left: 2px solid var(--border); margin-left: 16px; }
+.tl-item { display: flex; gap: 16px; margin-bottom: 16px; position: relative; }
+.tl-dot { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--border);
+          background: var(--surface); display: flex; align-items: center; justify-content: center;
+          font-size: 11px; font-weight: 700; flex-shrink: 0; margin-left: -15px; margin-top: 2px; }
+.tl-dot.blue   { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.tl-dot.green  { background: var(--s1-bg); border-color: var(--s1-bdr); color: var(--s1-clr); }
+.tl-dot.orange { background: var(--s2-bg); border-color: var(--s2-bdr); color: var(--s2-clr); }
+.tl-dot.purple { background: var(--s3-bg); border-color: var(--s3-bdr); color: var(--s3-clr); }
+.tl-content { flex: 1; }
+.tl-content strong { font-size: 13px; font-weight: 600; color: var(--ink); display: block; margin-bottom: 3px; }
+.tl-content span { font-size: 12px; color: var(--ink-2); line-height: 1.5; }
+/* ── Layer stack (bottom-up architecture) ──── */
+.layer-stack { display: flex; flex-direction: column-reverse; gap: 6px; margin: 18px 0; }
+.layer { border-radius: 8px; padding: 10px 18px; font-size: 13px; font-weight: 600;
+         text-align: center; border: 1.5px solid var(--border); background: var(--surface); }
+.layer-input  { background: var(--s1-bg); border-color: var(--s1-bdr); color: var(--s1-clr); }
+.layer-core   { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
+.layer-mid    { background: var(--s2-bg); border-color: var(--s2-bdr); color: var(--s2-clr); }
+.layer-output { background: var(--s3-bg); border-color: var(--s3-bdr); color: var(--s3-clr); }
+.layer small  { display: block; font-size: 11px; font-weight: 400; opacity: 0.75; margin-top: 2px; }
+/* ── Spoke (hub + radiating nodes) ────────── */
+.spoke-wrap { margin: 18px 0; }
+.spoke-hub { background: var(--ink); color: #fff; border-radius: 10px; padding: 12px 20px;
+             text-align: center; font-weight: 700; font-size: 14px; margin-bottom: 12px; }
+.spoke-ring { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.spoke-node { border-radius: 7px; padding: 8px 14px; font-size: 12px; font-weight: 600;
+              border: 1.5px solid var(--border); background: var(--surface); text-align: center; min-width: 100px; }
+.spoke-node.green  { background: var(--s1-bg); border-color: var(--s1-bdr); color: var(--s1-clr); }
+.spoke-node.orange { background: var(--s2-bg); border-color: var(--s2-bdr); color: var(--s2-clr); }
+.spoke-node.purple { background: var(--s3-bg); border-color: var(--s3-bdr); color: var(--s3-clr); }
+.spoke-node.blue   { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
+.spoke-node small  { display: block; font-size: 10px; font-weight: 400; opacity: 0.75; margin-top: 2px; }
+/* ── Badge row ─────────────────────────────── */
+.badge-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0; }
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 20px;
+         font-size: 12px; font-weight: 600; border: 1.5px solid var(--border); background: var(--surface); }
+.badge.blue   { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
+.badge.green  { background: var(--s1-bg); border-color: var(--s1-bdr); color: var(--s1-clr); }
+.badge.orange { background: var(--s2-bg); border-color: var(--s2-bdr); color: var(--s2-clr); }
+.badge.purple { background: var(--s3-bg); border-color: var(--s3-bdr); color: var(--s3-clr); }
+.badge.gray   { background: #f4f4f2; border-color: var(--border); color: var(--ink-2); }
+/* ── Callout variants ──────────────────────── */
+.callout.warn    { background: var(--s2-bg); border-color: var(--s2-clr); color: var(--s2-clr); }
+.callout.success { background: var(--s1-bg); border-color: var(--s1-clr); color: var(--s1-clr); }
+/* ────────────────────────────────────────────── */
 @media (max-width: 600px) {
   .compare-grid { grid-template-columns: 1fr; }
   .pipeline { flex-direction: column; }
@@ -386,6 +627,7 @@ body { background: var(--bg); color: var(--ink); font-family: 'Inter', system-ui
 }
 @media print { body { background: white; } .section { break-inside: avoid; box-shadow: none; } }
 </style>
+<style>__EXTRA_STYLES__</style>
 </head>
 <body>
 <div class="container">
@@ -447,10 +689,10 @@ def api_papers_analyze(req: PaperAnalyzeRequest) -> dict[str, Any]:
     if cached:
         return {"html": cached, "from_cache": True}
 
-    # 2. Generate via LLM
+    # 2. Generate via LLM (premium model — complex HTML output, result is cached)
     cfg = _cfg(req.config_path)
     provider = cfg.llm_provider
-    model = cfg.openai_model if provider == "openai" else cfg.gemini_model
+    model = cfg.openai_analysis_model if provider == "openai" else cfg.gemini_analysis_model
     base_url = cfg.openai_base_url if provider == "openai" else cfg.gemini_base_url
 
     authors_display = ", ".join(req.authors[:5]) + (" et al." if len(req.authors) > 5 else "")
@@ -493,7 +735,16 @@ def api_papers_analyze(req: PaperAnalyzeRequest) -> dict[str, Any]:
     visual = str(data.get("visual") or "<p>Không có dữ liệu.</p>")
     results = str(data.get("results") or "<p>Không có dữ liệu.</p>")
 
-    # 4. Inject into HTML template
+    # 4. Extract any <style> blocks the model added in the visual section → move to <head>
+    import re as _re2
+    extra_styles_parts: list[str] = []
+    def _collect_style(m: "_re2.Match[str]") -> str:
+        extra_styles_parts.append(m.group(1))
+        return ""
+    visual_clean = _re2.sub(r"<style[^>]*>(.*?)</style>", _collect_style, visual, flags=_re2.DOTALL | _re2.IGNORECASE)
+    extra_styles = "\n".join(extra_styles_parts)
+
+    # 5. Inject into HTML template
     import datetime
     import html as _html
 
@@ -508,13 +759,14 @@ def api_papers_analyze(req: PaperAnalyzeRequest) -> dict[str, Any]:
         .replace("__AUTHORS__", _html.escape(authors_display or "Không rõ tác giả"))
         .replace("__KEYWORDS_HTML__", keywords_html)
         .replace("__MOTIVATION__", motivation)
-        .replace("__VISUAL__", visual)
+        .replace("__VISUAL__", visual_clean)
         .replace("__RESULTS__", results)
         .replace("__GENERATED_AT__", generated_at)
+        .replace("__EXTRA_STYLES__", extra_styles)
     )
 
-    # 5. Cache fire-and-forget
-    upsert_analysis(req.paper_id, report_html)
+    # 5. Cache fire-and-forget (background — không block HTTP response)
+    _bg_pool.submit(upsert_analysis, req.paper_id, report_html)
 
     return {"html": report_html, "from_cache": False}
 
@@ -658,47 +910,55 @@ def _search_fallback(req: PaperSearchRequest) -> list[dict[str, Any]]:
     else:
         years = [current_year, current_year - 1]
 
+    def _fetch_one(venue_key: str, year: int) -> list:
+        try:
+            return search_papers(
+                query=req.query,
+                venue_key=venue_key,
+                year=year,
+                limit=req.limit * 2,
+                accepted_only=True,
+            )
+        except Exception:
+            return []
+
+    tasks = [(v, y) for v in venue_keys for y in sorted(years, reverse=True)]
+    all_raw: list = []
+    # max_workers=3 to avoid hammering OpenReview rate limits
+    with ThreadPoolExecutor(max_workers=min(len(tasks), 3)) as pool:
+        futures = [pool.submit(_fetch_one, v, y) for v, y in tasks]
+        for f in as_completed(futures):
+            all_raw.extend(f.result())
+
     papers: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for venue_key in venue_keys:
-        for year in sorted(years, reverse=True):
-            try:
-                results = search_papers(
-                    query=req.query,
-                    venue_key=venue_key,
-                    year=year,
-                    limit=req.limit * 2,
-                    accepted_only=True,
-                )
-            except ValueError:
-                continue
-            for p in results:
-                if not p.abstract:
-                    continue
-                key = p.id or p.title
-                if key in seen:
-                    continue
-                seen.add(key)
-                venue = p.venue or ""
-                conference = _normalize_venue(venue) or venue_key.upper()
-                papers.append({
-                    "paper_id": p.id or "",
-                    "title": p.title,
-                    "abstract": p.abstract,
-                    "summary": None,
-                    "title_vi": None,
-                    "authors": [{"name": a} for a in p.authors],
-                    "year": p.year,
-                    "venue": venue,
-                    "conference": conference,
-                    "url": p.url,
-                    "citation_count": None,
-                    "relevance_score": None,
-                    "key_contributions": [],
-                    "tags": list(p.keywords),
-                })
-                if len(papers) >= req.limit:
-                    return _enrich_citation_counts(papers)
+    for p in all_raw:
+        if not p.abstract:
+            continue
+        key = p.id or p.title
+        if key in seen:
+            continue
+        seen.add(key)
+        venue = p.venue or ""
+        conference = _normalize_venue(venue) or (p.id or "").split("/")[0].upper()
+        papers.append({
+            "paper_id": p.id or "",
+            "title": p.title,
+            "abstract": p.abstract,
+            "summary": None,
+            "title_vi": None,
+            "authors": [{"name": a} for a in p.authors],
+            "year": p.year,
+            "venue": venue,
+            "conference": conference,
+            "url": p.url,
+            "citation_count": None,
+            "relevance_score": None,
+            "key_contributions": [],
+            "tags": list(p.keywords),
+        })
+        if len(papers) >= req.limit:
+            break
     return _enrich_citation_counts(papers)
 
 
@@ -751,40 +1011,42 @@ def api_papers_search(req: PaperSearchRequest) -> dict[str, Any]:
     papers: list[dict[str, Any]] = []
     has_more = False
 
-    # Build ordered list of queries to try: primary first, then variants
-    queries_to_try = [req.query] + [v for v in req.keyword_variants[:2] if v and v != req.query]
+    variant_queries = [v for v in req.keyword_variants[:2] if v and v != req.query]
 
-    for i, query in enumerate(queries_to_try):
-        if len(papers) >= req.limit:
-            break
-        params = _build_s2_params(query, req, batch_limit)
-        try:
-            raw = _call_s2(params)
-        except requests.HTTPError as e:
-            status = e.response.status_code if e.response is not None else 0
-            if status == 429 and i == 0:
-                # Rate limited on primary — fall back to OpenReview
-                fallback = _search_fallback(req)
-                fallback = _score_papers(req.query, fallback)
-                has_more = len(fallback) >= req.limit
-                return {
-                    "papers": fallback, "total": len(fallback),
-                    "query": req.query, "has_more": has_more,
-                    "corrected_query": req.corrected_query,
-                }
-            if status == 429:
-                break  # rate limited on variant — skip remaining
-            raise HTTPException(status_code=502, detail="Nguồn dữ liệu phản hồi lỗi. Vui lòng thử lại sau.")
-        except requests.RequestException:
-            if i == 0:
-                raise HTTPException(status_code=502, detail="Không thể kết nối nguồn dữ liệu. Vui lòng kiểm tra mạng.")
-            break  # network error on variant — use what we have
+    # ── Primary S2 query ──────────────────────────────────────────────────────
+    try:
+        primary_raw = _call_s2(_build_s2_params(req.query, req, batch_limit))
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 0
+        if status == 429:
+            # Rate limited on primary — fall back to OpenReview
+            fallback = _search_fallback(req)
+            fallback = _score_papers(req.query, fallback)
+            has_more = len(fallback) >= req.limit
+            return {
+                "papers": fallback, "total": len(fallback),
+                "query": req.query, "has_more": has_more,
+                "corrected_query": req.corrected_query,
+            }
+        raise HTTPException(status_code=502, detail="Nguồn dữ liệu phản hồi lỗi. Vui lòng thử lại sau.")
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Không thể kết nối nguồn dữ liệu. Vui lòng kiểm tra mạng.")
 
-        _collect_from_raw(raw, req, seen_ids, papers)
+    _collect_from_raw(primary_raw, req, seen_ids, papers)
+    has_more = len(primary_raw) >= batch_limit
 
-        # has_more is true if primary batch was full (indicates more pages exist)
-        if i == 0:
-            has_more = len(raw) >= batch_limit
+    # ── Variant queries in parallel (only if we still need more results) ──────
+    if variant_queries and len(papers) < req.limit:
+        variant_params = [_build_s2_params(q, req, batch_limit) for q in variant_queries]
+        with ThreadPoolExecutor(max_workers=len(variant_params)) as pool:
+            futures = {pool.submit(_call_s2, p): p for p in variant_params}
+            for future in as_completed(futures):
+                if len(papers) >= req.limit:
+                    break
+                try:
+                    _collect_from_raw(future.result(), req, seen_ids, papers)
+                except Exception:
+                    pass  # variant failure is non-critical
 
     papers = _score_papers(req.query, papers)
     return {
@@ -1045,7 +1307,7 @@ def translate(req: TranslateRequest) -> dict[str, Any]:
     cfg = _cfg(req.config_path)
     try:
         provider = req.provider or cfg.llm_provider
-        model = req.model or (cfg.openai_model if provider == "openai" else cfg.gemini_model)
+        model = req.model or (cfg.openai_cheap_model if provider == "openai" else cfg.gemini_cheap_model)
         base_url = req.base_url or (cfg.openai_base_url if provider == "openai" else cfg.gemini_base_url)
         vi = translate_abstract_vi(text=req.abstract, provider=provider, model=model, base_url=base_url)
     except Exception as e:
@@ -1066,7 +1328,7 @@ def summarize(req: SummarizeRequest) -> dict[str, Any]:
     cfg = _cfg(req.config_path)
     try:
         provider = req.provider or cfg.llm_provider
-        model = req.model or (cfg.openai_model if provider == "openai" else cfg.gemini_model)
+        model = req.model or (cfg.openai_cheap_model if provider == "openai" else cfg.gemini_cheap_model)
         base_url = req.base_url or (cfg.openai_base_url if provider == "openai" else cfg.gemini_base_url)
         s = summarize_abstract(text=req.abstract, provider=provider, model=model, base_url=base_url)
     except Exception as e:

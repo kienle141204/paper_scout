@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { Icon } from './atoms'
 import type { Screen } from '../types/paper'
 import MobileMenu from './MobileMenu'
+import { useLanguage } from '../contexts/LanguageContext'
+import { useAuth } from '../contexts/AuthContext'
 
 interface Props {
   screen: Screen
@@ -10,6 +12,9 @@ interface Props {
   onHome: () => void
   onSaved: () => void
   onChat: () => void
+  onSearch?: (query: string) => void
+  onSettings: () => void
+  onLogin: () => void
 }
 
 function navLink(_href: string, handler: () => void, e: React.MouseEvent) {
@@ -17,9 +22,14 @@ function navLink(_href: string, handler: () => void, e: React.MouseEvent) {
   handler()
 }
 
-export default function NavBar({ screen, savedCount, query, onHome, onSaved, onChat }: Props) {
+export default function NavBar({ screen, savedCount, query, onHome, onSaved, onChat, onSearch, onSettings, onLogin }: Props) {
   const onInner = screen !== 'home'
   const [menuOpen, setMenuOpen] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const { t } = useLanguage()
+  const { isLoggedIn, user } = useAuth()
+
+  const nt = t.nav
 
   return (
     <>
@@ -55,22 +65,31 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
 
           {/* Compact search bar on inner pages */}
           {onInner && (
-            <a
-              href="/"
-              onClick={(e) => navLink('/', onHome, e)}
+            <form
               className="flex items-center gap-2 flex-1 sm:max-w-[360px]"
               style={{
                 border: '1px solid var(--border-strong)', borderRadius: 8,
-                padding: '8px 12px', background: 'var(--surface)',
-                cursor: 'text', color: 'var(--ink-2)', fontSize: 13.5,
-                textDecoration: 'none',
+                padding: '6px 12px', background: 'var(--surface)',
+              }}
+              onSubmit={(e) => {
+                e.preventDefault()
+                const val = inputRef.current?.value.trim()
+                if (val && onSearch) onSearch(val)
               }}
             >
               <Icon name="search" size={15} style={{ color: 'var(--ink-3)', flexShrink: 0 }} />
-              <span className="overflow-hidden text-ellipsis whitespace-nowrap flex-1 text-left">
-                {query || 'Tìm paper…'}
-              </span>
-            </a>
+              <input
+                ref={inputRef}
+                type="text"
+                defaultValue={query}
+                key={query}
+                placeholder={nt.searchPlaceholder}
+                style={{
+                  flex: 1, border: 'none', outline: 'none', background: 'transparent',
+                  fontSize: 13.5, color: 'var(--ink)', minWidth: 0,
+                }}
+              />
+            </form>
           )}
 
           {/* Spacer */}
@@ -84,7 +103,7 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
               className={`btn btn-ghost btn-sm${screen === 'home' || screen === 'results' ? ' text-ink' : ''}`}
               style={{ textDecoration: 'none' }}
             >
-              <Icon name="search" size={15} /> Tìm kiếm
+              <Icon name="search" size={15} /> {nt.search}
             </a>
             <a
               href="/chat"
@@ -92,7 +111,7 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
               className={`btn btn-ghost btn-sm${screen === 'chat' ? ' text-ink' : ''}`}
               style={{ textDecoration: 'none' }}
             >
-              <Icon name="chat" size={15} /> Chat AI
+              <Icon name="chat" size={15} /> {nt.chatAi}
             </a>
             <a
               href="/saved"
@@ -100,7 +119,7 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
               className={`btn btn-ghost btn-sm relative${screen === 'saved' ? ' text-ink' : ''}`}
               style={{ textDecoration: 'none' }}
             >
-              <Icon name="bookmark" size={15} /> Đã lưu
+              <Icon name="bookmark" size={15} /> {nt.saved}
               {savedCount > 0 && (
                 <span
                   className="mono inline-grid place-items-center"
@@ -114,13 +133,48 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
                 </span>
               )}
             </a>
+
+            {/* Settings button */}
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={onSettings}
+              aria-label={nt.settings}
+              title={nt.settings}
+            >
+              <Icon name="settings" size={15} />
+            </button>
+
+            {/* Login / user avatar */}
+            {isLoggedIn && user ? (
+              <button
+                onClick={onSettings}
+                title={user.display_name ?? user.email}
+                style={{
+                  width: 30, height: 30, borderRadius: '50%',
+                  background: 'var(--ink)', color: 'var(--bg)',
+                  border: 'none', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 13, fontWeight: 700, flexShrink: 0,
+                }}
+              >
+                {(user.display_name ?? user.email)[0].toUpperCase()}
+              </button>
+            ) : (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={onLogin}
+                style={{ fontSize: 13 }}
+              >
+                {nt.login}
+              </button>
+            )}
           </div>
 
           {/* Hamburger — mobile only */}
           <button
             className="flex sm:hidden btn btn-ghost btn-sm"
             onClick={() => setMenuOpen(true)}
-            aria-label="Mở menu"
+            aria-label={nt.menuOpen}
           >
             <Icon name="menu" size={18} />
           </button>
@@ -135,6 +189,8 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
         onHome={() => { setMenuOpen(false); onHome() }}
         onSaved={() => { setMenuOpen(false); onSaved() }}
         onChat={() => { setMenuOpen(false); onChat() }}
+        onSettings={() => { setMenuOpen(false); onSettings() }}
+        onLogin={() => { setMenuOpen(false); onLogin() }}
       />
     </>
   )

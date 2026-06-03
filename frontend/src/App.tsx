@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import NavBar from './components/NavBar'
 import AdvancedFilters from './components/AdvancedFilters'
+import AuthModal from './components/AuthModal'
+import SettingsPanel from './components/SettingsPanel'
 import HomeScreen from './screens/HomeScreen'
 import ResultsScreen from './screens/ResultsScreen'
 import DetailScreen from './screens/DetailScreen'
@@ -10,6 +12,8 @@ import type { Paper, Conference, Filters, SortKey, Screen } from './types/paper'
 import { DEFAULT_FILTERS } from './types/paper'
 import { getConferences, searchPapers, parseQuery } from './services/api'
 import type { SearchParams } from './services/api'
+import { LanguageProvider } from './contexts/LanguageContext'
+import { AuthProvider, useAuth } from './contexts/AuthContext'
 
 function screenToUrl(screen: Screen, selectedId: string | null, query: string): string {
   if (screen === 'detail' && selectedId) return `/detail/${encodeURIComponent(selectedId)}`
@@ -33,7 +37,8 @@ function parseInitialUrl(): { screen: Screen; selectedId: string | null } {
 // Parse URL once before component mounts (not inside render loop)
 const _INIT = parseInitialUrl()
 
-export default function App() {
+function AppInner() {
+  const { isLoggedIn } = useAuth()
   const [screen, setScreen] = useState<Screen>(_INIT.screen)
   const [prevScreen, setPrevScreen] = useState<Screen>('results')
   const [query, setQuery] = useState('')
@@ -43,6 +48,7 @@ export default function App() {
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
   const [sort, setSort] = useState<SortKey>('relevance')
   const [savedMap, setSavedMap] = useState<Record<string, Paper>>(() => {
+    if (!localStorage.getItem('ps_token')) return {}
     try { return JSON.parse(localStorage.getItem('ps_saved_papers') ?? '{}') } catch { return {} }
   })
   const savedIds = useMemo(() => Object.keys(savedMap), [savedMap])
@@ -53,8 +59,17 @@ export default function App() {
   const [confError, setConfError] = useState(false)
   const [lastSearchParams, setLastSearchParams] = useState<SearchParams | null>(null)
   const [hasMore, setHasMore] = useState(false)
-  const [loadingMore, setLoadingMore] = useState(false)
+  const [currentPage, setCurrentPage] = useState(1)
   const [correctedQuery, setCorrectedQuery] = useState<string | null>(null)
+  const [authModalOpen, setAuthModalOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  // When user logs out, clear savedMap
+  useEffect(() => {
+    if (!isLoggedIn) {
+      setSavedMap({})
+    }
+  }, [isLoggedIn])
 
   // ── URL / History routing ────────────────────────────────────────────────
   const isPopping = useRef(false)
@@ -100,6 +115,8 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior })
   }, [screen, selectedId])
 
+  const PAGE_SIZE = 10
+
   const runSearch = useCallback(async (params: SearchParams) => {
     setLastSearchParams(params)
     setQuery(params.query)
@@ -108,39 +125,38 @@ export default function App() {
     setPapers([])
     setHasMore(false)
     setCorrectedQuery(null)
+    setCurrentPage(1)
     setScreen('results')
     try {
-      const result = await searchPapers({ ...params, offset: 0 })
+      const result = await searchPapers({ ...params, offset: 0, limit: PAGE_SIZE })
       setPapers(result.papers)
       setHasMore(result.hasMore)
       setCorrectedQuery(result.correctedQuery)
-      setLastSearchParams({ ...params, offset: result.papers.length })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Đã xảy ra lỗi không xác định.')
+      setError(err instanceof Error ? err.message : 'An unknown error occurred.')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [PAGE_SIZE])
 
-  const loadMore = useCallback(async () => {
-    if (!lastSearchParams || loadingMore) return
-    setLoadingMore(true)
+  const goToPage = useCallback(async (page: number) => {
+    if (!lastSearchParams) return
+    setLoading(true)
+    setError(null)
+    setPapers([])
+    setHasMore(false)
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior })
     try {
-      const result = await searchPapers(lastSearchParams)
-      setPapers((prev) => {
-        const existingIds = new Set(prev.map((p) => p.id))
-        const newPapers = result.papers.filter((p) => !existingIds.has(p.id))
-        return [...prev, ...newPapers]
-      })
+      const result = await searchPapers({ ...lastSearchParams, offset: (page - 1) * PAGE_SIZE, limit: PAGE_SIZE })
+      setPapers(result.papers)
       setHasMore(result.hasMore)
-      setLastSearchParams((prev) => prev ? { ...prev, offset: (prev.offset ?? 0) + result.papers.length } : prev)
-    } catch {
-      // load more failure is non-critical — just hide the button
-      setHasMore(false)
+      setCurrentPage(page)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An unknown error occurred.')
     } finally {
-      setLoadingMore(false)
+      setLoading(false)
     }
-  }, [lastSearchParams, loadingMore])
+  }, [lastSearchParams, PAGE_SIZE])
 
   const handleSearch = useCallback(
     async (args: { query: string; confs: string[]; yearFrom: number; yearTo: number }) => {
@@ -167,10 +183,14 @@ export default function App() {
   )
 
   const handleRetry = useCallback(() => {
-    if (lastSearchParams) runSearch(lastSearchParams)
-  }, [lastSearchParams, runSearch])
+    if (lastSearchParams) goToPage(currentPage)
+  }, [lastSearchParams, currentPage, goToPage])
 
   const toggleSave = useCallback((id: string) => {
+    if (!isLoggedIn) {
+      setAuthModalOpen(true)
+      return
+    }
     setSavedMap((prev) => {
       let next: Record<string, Paper>
       if (id in prev) {
@@ -184,7 +204,7 @@ export default function App() {
       localStorage.setItem('ps_saved_papers', JSON.stringify(next))
       return next
     })
-  }, [papers, chatPapersMap])
+  }, [papers, chatPapersMap, isLoggedIn])
 
   const openPaper = useCallback((id: string) => {
     setPrevScreen(screen)
@@ -238,6 +258,9 @@ export default function App() {
         onHome={() => setScreen('home')}
         onSaved={() => setScreen('saved')}
         onChat={() => setScreen('chat')}
+        onSearch={(q) => handleSearch({ query: q, confs: filters.confs, yearFrom: filters.years[0], yearTo: filters.years[1] })}
+        onSettings={() => setSettingsOpen(true)}
+        onLogin={() => setAuthModalOpen(true)}
       />
 
       {screen === 'home' && (
@@ -263,8 +286,8 @@ export default function App() {
           activeAdvCount={activeAdvCount}
           onRetry={handleRetry}
           hasMore={hasMore}
-          loadingMore={loadingMore}
-          onLoadMore={loadMore}
+          currentPage={currentPage}
+          onGoToPage={goToPage}
           correctedQuery={correctedQuery}
         />
       )}
@@ -278,6 +301,7 @@ export default function App() {
           onToggleSave={() => toggleSave(selected.id)}
           onBack={handleBack}
           onOpen={openPaper}
+          onNeedAuth={() => setAuthModalOpen(true)}
         />
       )}
 
@@ -287,6 +311,7 @@ export default function App() {
           onOpen={openPaper}
           onToggleSave={toggleSave}
           onGoSearch={() => setScreen('home')}
+          onOpenAuth={() => setAuthModalOpen(true)}
         />
       )}
 
@@ -309,6 +334,17 @@ export default function App() {
         />
       )}
 
+      {authModalOpen && (
+        <AuthModal onClose={() => setAuthModalOpen(false)} />
+      )}
+
+      {settingsOpen && (
+        <SettingsPanel
+          onClose={() => setSettingsOpen(false)}
+          onOpenAuth={() => setAuthModalOpen(true)}
+        />
+      )}
+
       <footer style={{
         borderTop: '1px solid var(--border)',
         padding: '18px 28px',
@@ -327,5 +363,15 @@ export default function App() {
         </span>
       </footer>
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <LanguageProvider>
+      <AuthProvider>
+        <AppInner />
+      </AuthProvider>
+    </LanguageProvider>
   )
 }

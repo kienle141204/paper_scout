@@ -2,20 +2,32 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from typing import Any
+
+_client_lock = threading.Lock()
+_client_obj = None
+_client_ready = False
 
 
 def _get_client():
-    """Trả về Supabase client hoặc None nếu chưa cấu hình."""
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_ANON_KEY")
-    if not url or not key:
-        return None
-    try:
-        from supabase import create_client
-        return create_client(url, key)
-    except Exception:
-        return None
+    """Trả về Supabase client singleton hoặc None nếu chưa cấu hình."""
+    global _client_obj, _client_ready
+    if _client_ready:
+        return _client_obj
+    with _client_lock:
+        if _client_ready:
+            return _client_obj
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_ANON_KEY")
+        if url and key:
+            try:
+                from supabase import create_client
+                _client_obj = create_client(url, key)
+            except Exception:
+                _client_obj = None
+        _client_ready = True
+    return _client_obj
 
 
 def get_cached_paper(paper_id: str) -> dict[str, Any] | None:

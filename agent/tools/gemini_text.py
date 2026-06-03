@@ -5,6 +5,8 @@ from typing import Any
 
 import requests
 
+_session = requests.Session()
+
 
 def generate_text(
     *,
@@ -44,7 +46,7 @@ def generate_text(
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": contents,
     }
-    resp = requests.post(url, params=params, json=payload, timeout=120)
+    resp = _session.post(url, params=params, json=payload, timeout=120)
     resp.raise_for_status()
     data = resp.json()
     candidates = data.get("candidates") or []

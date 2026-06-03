@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
 import { Icon } from './atoms'
 import type { Screen } from '../types/paper'
+import { useLanguage } from '../contexts/LanguageContext'
+import { useAuth } from '../contexts/AuthContext'
 
 interface Props {
   open: boolean
@@ -10,9 +12,15 @@ interface Props {
   onHome: () => void
   onSaved: () => void
   onChat: () => void
+  onSettings: () => void
+  onLogin: () => void
 }
 
-export default function MobileMenu({ open, onClose, screen, savedCount, onHome, onSaved, onChat }: Props) {
+export default function MobileMenu({ open, onClose, screen, savedCount, onHome, onSaved, onChat, onSettings, onLogin }: Props) {
+  const { t } = useLanguage()
+  const { isLoggedIn, user } = useAuth()
+  const nt = t.nav
+
   useEffect(() => {
     document.body.style.overflow = open ? 'hidden' : ''
     return () => { document.body.style.overflow = '' }
@@ -39,7 +47,7 @@ export default function MobileMenu({ open, onClose, screen, savedCount, onHome, 
           <span style={{ fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>
             Paper<b>Scout</b>
           </span>
-          <button className="btn btn-ghost btn-sm" onClick={onClose} aria-label="Đóng menu">
+          <button className="btn btn-ghost btn-sm" onClick={onClose} aria-label="Close menu">
             <Icon name="close" size={16} />
           </button>
         </div>
@@ -51,7 +59,7 @@ export default function MobileMenu({ open, onClose, screen, savedCount, onHome, 
             className={`btn btn-ghost btn-block${screen === 'home' || screen === 'results' ? ' text-ink' : ''}`}
             style={{ justifyContent: 'flex-start', height: 52, fontSize: 15, textDecoration: 'none' }}
           >
-            <Icon name="search" size={17} /> Tìm kiếm
+            <Icon name="search" size={17} /> {nt.search}
           </a>
           <a
             href="/chat"
@@ -59,7 +67,7 @@ export default function MobileMenu({ open, onClose, screen, savedCount, onHome, 
             className={`btn btn-ghost btn-block${screen === 'chat' ? ' text-ink' : ''}`}
             style={{ justifyContent: 'flex-start', height: 52, fontSize: 15, textDecoration: 'none' }}
           >
-            <Icon name="chat" size={17} /> Chat AI
+            <Icon name="chat" size={17} /> {nt.chatAi}
           </a>
           <a
             href="/saved"
@@ -68,7 +76,7 @@ export default function MobileMenu({ open, onClose, screen, savedCount, onHome, 
             style={{ justifyContent: 'flex-start', height: 52, fontSize: 15, textDecoration: 'none' }}
           >
             <Icon name="bookmark" size={17} />
-            Đã lưu
+            {nt.saved}
             {savedCount > 0 && (
               <span
                 className="mono inline-grid place-items-center"
@@ -83,6 +91,45 @@ export default function MobileMenu({ open, onClose, screen, savedCount, onHome, 
               </span>
             )}
           </a>
+
+          {/* Divider */}
+          <div style={{ borderTop: '1px solid var(--border)', margin: '4px 8px' }} />
+
+          <button
+            onClick={onSettings}
+            className="btn btn-ghost btn-block"
+            style={{ justifyContent: 'flex-start', height: 52, fontSize: 15 }}
+          >
+            <Icon name="settings" size={17} /> {nt.settings}
+          </button>
+
+          {isLoggedIn && user ? (
+            <button
+              onClick={onSettings}
+              className="btn btn-ghost btn-block"
+              style={{ justifyContent: 'flex-start', height: 52, fontSize: 15 }}
+            >
+              <div style={{
+                width: 22, height: 22, borderRadius: '50%',
+                background: 'var(--ink)', color: 'var(--bg)',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 11, fontWeight: 700, flexShrink: 0,
+              }}>
+                {(user.display_name ?? user.email)[0].toUpperCase()}
+              </div>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {user.display_name ?? user.email}
+              </span>
+            </button>
+          ) : (
+            <button
+              onClick={onLogin}
+              className="btn btn-ghost btn-block"
+              style={{ justifyContent: 'flex-start', height: 52, fontSize: 15 }}
+            >
+              <Icon name="user" size={17} /> {nt.login}
+            </button>
+          )}
         </div>
       </nav>
     </>

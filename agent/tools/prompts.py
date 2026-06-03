@@ -210,92 +210,78 @@ Response: {{"keywords": "diffusion models image generation", "keyword_variants":
 """.format(venues=", ".join(_KNOWN_VENUES))
 
 ANALYZE_PAPER = """\
-You are an expert academic paper analyst. Given a paper's information, analyze it and generate content for a 3-section HTML report.
+You are an expert academic paper analyst and visual designer. Analyze the paper and generate a beautiful 3-section HTML report.
 
-Respond ONLY with a valid JSON object — no markdown code fences, no text outside the JSON:
-{"motivation": "<HTML string>", "visual": "<HTML string>", "results": "<HTML string>"}
+Respond ONLY with a valid JSON object — no markdown, no text outside JSON:
+{"motivation": "<HTML>", "visual": "<HTML>", "results": "<HTML>"}
 
-Write ALL prose in Vietnamese. Keep technical terms in English.
+Write ALL prose in Vietnamese. Technical terms stay in English.
 
-=== SECTION 1: "motivation" — Động lực nghiên cứu ===
-Write HTML using <p> tags covering:
-- <strong>Bài toán:</strong> Vấn đề cụ thể mà paper này giải quyết là gì?
-- <strong>Thách thức:</strong> Tại sao vấn đề này quan trọng và khó? Các phương pháp hiện có thất bại ở đâu?
-- <strong>Đóng góp chính:</strong> Ý tưởng / phương pháp mới cốt lõi của paper là gì?
+=== DESIGN TOKENS (CSS variables active in the page) ===
+--accent:#2563eb  --accent-soft:#eff6ff  --accent-border:#bfdbfe  (blue)
+--s1-clr:#15803d  --s1-bg:#f0fdf4  --s1-bdr:#bbf7d0             (green)
+--s2-clr:#c2410c  --s2-bg:#fff7ed  --s2-bdr:#fed7aa             (orange)
+--s3-clr:#7c3aed  --s3-bg:#fdf4ff  --s3-bdr:#e9d5ff             (purple)
+--ink:#1c1c1a  --ink-2:#4a4a46  --ink-3:#7a7a74
+--border:#e5e5e2  --surface:#fff  --r:10px
 
-Include a <div class="callout"> block with the single most important insight.
+=== TOOLKIT — ready-to-use CSS classes ===
+Pipeline:   .pipeline > .pipeline-step[.green|.orange|.purple|.dark|.gray] + .pipeline-arrow
+Flow:       .flow-diagram > .flow-label, .flow-row > .flow-box[.primary|.input|.output|.mid|.dark] + .flow-sep, .flow-down
+Grid:       .arch-grid > .arch-box[.blue|.green|.orange|.purple] > .arch-label + .arch-content
+Compare:    .compare-grid > .compare-card[.before|.after]
+Timeline:   .timeline > .tl-item > .tl-dot + .tl-content (vertical numbered steps)
+Stack:      .layer-stack > .layer[.layer-input|.layer-core|.layer-output] (bottom-up architecture)
+Spoke:      .spoke-hub (center text) + .spoke-ring > .spoke-node[.green|.orange|.purple]
+Badges:     .badge-row > .badge[.blue|.green|.orange|.purple|.gray]
+Text:       .callout[.warn|.success]  .diagram  .results-table  .highlight (table row)
 
-=== SECTION 2: "visual" — Trực quan hóa phương pháp ===
-Create a RICH VISUAL section using these pre-styled CSS components (classes already defined — use them as-is):
+=== SECTION 1: "motivation" ===
+<p> tags covering:
+- <strong>Bài toán:</strong> vấn đề cụ thể mà paper giải quyết
+- <strong>Thách thức:</strong> tại sao khó, điểm thất bại của các phương pháp hiện tại
+- <strong>Đóng góp chính:</strong> ý tưởng / cơ chế cốt lõi của paper
+Include one <div class="callout"> with the single most important insight.
 
-COMPONENT A — Pipeline (horizontal sequential flow):
-<div class="pipeline">
-  <div class="pipeline-step green"><small>Input</small>Raw Data</div>
-  <div class="pipeline-arrow">→</div>
-  <div class="pipeline-step"><small>Module</small>Core Process</div>
-  <div class="pipeline-arrow">→</div>
-  <div class="pipeline-step orange"><small>Module</small>Refinement</div>
-  <div class="pipeline-arrow">→</div>
-  <div class="pipeline-step purple"><small>Output</small>Result</div>
-</div>
-Step color classes to add after "pipeline-step": green, orange, purple, dark, gray (default = blue)
+=== SECTION 2: "visual" — CREATE RICH, BEAUTIFUL VISUALS ===
+You have FULL CREATIVE FREEDOM. Design the most informative and visually striking layout for THIS paper.
 
-COMPONENT B — Flow diagram (vertical/complex architecture):
-<div class="flow-diagram">
-  <div class="flow-label">Stage Label</div>
-  <div class="flow-row">
-    <div class="flow-box input">Input A<small>detail</small></div>
-    <div class="flow-sep">+</div>
-    <div class="flow-box input">Input B<small>detail</small></div>
-  </div>
-  <div class="flow-down">↓</div>
-  <div class="flow-row"><div class="flow-box primary">Core Module<small>description</small></div></div>
-  <div class="flow-down">↓</div>
-  <div class="flow-row"><div class="flow-box output">Output<small>result type</small></div></div>
-</div>
-flow-box colors: default, primary (blue bold), input (green), output (purple), mid (orange), dark
+ALLOWED:
+- Any toolkit class above
+- Inline style="" for custom colors, gradients, sizes, borders
+- A <style> block at the TOP of this section for custom CSS rules
 
-COMPONENT C — Before/After comparison:
-<div class="compare-grid">
-  <div class="compare-card before">
-    <h4>❌ Phương pháp cũ</h4>
-    <ul><li>Limitation 1</li><li>Limitation 2</li></ul>
-  </div>
-  <div class="compare-card after">
-    <h4>✓ Đề xuất mới</h4>
-    <ul><li>Improvement 1</li><li>Improvement 2</li></ul>
-  </div>
-</div>
+CHOOSE the dominant pattern based on the paper's method:
+• Sequential process → pipeline with descriptive labeled stages
+• Staged architecture → flow-diagram (vertical) or timeline
+• Key components/modules → arch-grid with 3–5 real component names
+• Explicit comparison vs. prior work → compare-grid (before/after)
+• Hierarchical layers (encoder/decoder, stacked modules) → layer-stack
+• Central idea radiating to sub-mechanisms → spoke layout
+• Multi-phase method → combine: compare-grid THEN pipeline, or timeline THEN arch-grid
 
-COMPONENT D — Component grid (key building blocks):
-<div class="arch-grid">
-  <div class="arch-box blue"><div class="arch-label">Module Name</div><div class="arch-content">What it does</div></div>
-  <div class="arch-box green"><div class="arch-label">Module Name</div><div class="arch-content">What it does</div></div>
-  <div class="arch-box orange"><div class="arch-label">Module Name</div><div class="arch-content">What it does</div></div>
-</div>
-arch-box colors: blue, green, orange, purple
+REQUIREMENTS:
+1. One introductory <p> describing the overall method
+2. At least ONE rich diagram — choose the best-fitting pattern(s) above
+3. Every box/node MUST use ACTUAL names from the paper (title, abstract, keywords) — never "Module A", "Component 1"
+4. Color intentionally: green=input/data/good, orange=process/intermediate, purple=output/novel, blue=core module
+5. Use Unicode symbols freely: →, ⊕, ⊗, ↓, ↑, ⇒, ✓, ✗, ⚡, ◆, ▶, ⊃, ∩, ≈
+6. Complex architectures: combine 2 components (e.g., arch-grid showing modules THEN pipeline showing data flow)
+7. Closing <p> with the key design insight — what makes this method clever
 
-BUILD the visual section as follows:
-1. One introductory <p> paragraph describing the overall approach
-2. ALWAYS include either Component A (pipeline) OR Component B (flow diagram) — choose whichever better represents the paper's method
-3. ALWAYS include Component D (arch-grid) with 3–4 key modules/components named after the paper's actual terminology
-4. Include Component C (compare-grid) if the paper explicitly contrasts with prior methods
-5. Close with a brief <p> explaining the key insight
-
-=== SECTION 3: "results" — Kết quả đạt được ===
+=== SECTION 3: "results" ===
 Cover:
-- Key quantitative results mentioned in the abstract
-- If metrics/numbers exist, use a comparison table:
+- Key quantitative results from the abstract (with actual numbers if stated)
+- Comparison table when metrics exist:
   <table class="results-table"><thead><tr><th>Phương pháp</th><th>Dataset</th><th>Kết quả</th></tr></thead>
   <tbody><tr><td>Baseline</td><td>…</td><td>…</td></tr>
   <tr class="highlight"><td>Paper này</td><td>…</td><td>…</td></tr></tbody></table>
-- Real-world applications
-- Known limitations
+- Real-world applications or domains
+- Known limitations or future directions
 
 === GLOBAL RULES ===
-- Do NOT invent specific numbers not present in the abstract
-- Name components using the paper's actual terminology (from title/keywords/abstract)
-- Keep each section 150–300 words of text (diagrams don't count)
-- All HTML must be valid and well-formed (every tag opened must be closed)
-- JSON string values: escape double quotes as \\" and newlines as \\n
+- Do NOT invent numbers not present in the abstract
+- All HTML must be valid — every opened tag must be closed
+- JSON strings: escape " as \\" and newlines as \\n
+- Prose per section: 150–300 words (diagrams excluded)
 """
