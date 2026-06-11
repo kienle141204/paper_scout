@@ -1,6 +1,7 @@
 import type { Conference, Paper } from '../types/paper'
 import type { ChatRequest, ChatResponse } from '../types/chat'
 import type { User } from '../contexts/AuthContext'
+import type { IngestResult, AskResult } from '../types/rag'
 
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
 
@@ -287,5 +288,69 @@ export async function searchPapers(
     query: data.query,
     hasMore: data.has_more ?? false,
     correctedQuery: data.corrected_query ?? null,
+  }
+}
+
+// ── RAG paper agent ──────────────────────────────
+
+export interface IngestPaperParams {
+  paper_id: string
+  title: string
+  abstract?: string
+  authors?: string[]
+  url?: string
+  conference?: string
+  year?: number
+  force?: boolean
+}
+
+export async function ingestPaper(params: IngestPaperParams): Promise<IngestResult> {
+  const res = await fetch(`${BASE}/api/papers/ingest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  })
+  if (!res.ok) {
+    const err: { detail?: string } = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export interface AskPaperParams {
+  paper_id: string
+  question: string
+  history: Array<{ role: 'user' | 'assistant'; content: string }>
+  // Paper metadata for auto-ingest if not yet indexed
+  title?: string
+  abstract?: string
+  authors?: string[]
+  url?: string
+  conference?: string
+  year?: number
+}
+
+export async function askPaper(params: AskPaperParams): Promise<AskResult> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 60_000)
+  try {
+    const res = await fetch(`${BASE}/api/papers/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      const err: { detail?: string } = await res.json().catch(() => ({}))
+      throw new Error(err.detail ?? `HTTP ${res.status}`)
+    }
+    return res.json()
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('Phân tích mất quá nhiều thời gian. Vui lòng thử lại.')
+    }
+    throw err
+  } finally {
+    clearTimeout(timeout)
   }
 }

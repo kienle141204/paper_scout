@@ -209,6 +209,83 @@ User: "diffusion models for image generation at CVPR 2023"
 Response: {{"keywords": "diffusion models image generation", "keyword_variants": ["score-based generative model image synthesis", "denoising diffusion probabilistic model"], "venues": ["CVPR"], "year_from": 2023, "year_to": 2023, "corrected_query": null}}
 """.format(venues=", ".join(_KNOWN_VENUES))
 
+PAPER_RAG_PLANNER = """\
+You are a retrieval strategist for academic paper Q&A.
+
+Given a question about a specific paper, output a structured retrieval plan.
+Output ONLY valid JSON — no prose, no markdown:
+{
+  "sub_questions": ["atomic aspect 1", "atomic aspect 2"],
+  "search_queries": ["dense semantic query 1", "dense semantic query 2", "dense semantic query 3"],
+  "sections": ["method", "results"]
+}
+
+Rules:
+- sub_questions: decompose the question into 1–3 specific aspects; simple questions → 1 entry
+- search_queries: 2–4 dense retrieval queries; 1st = close to original, rest = alternate angles / synonyms / technical variants; use English noun phrases optimized for semantic search
+- sections: 1–3 paper sections most likely to contain the answer; choose from [abstract, introduction, method, results, conclusion, related_work, body]
+"""
+
+PAPER_RAG_ANSWERER = """\
+You are a rigorous academic paper assistant. Answer the question using ONLY the numbered evidence chunks below.
+
+Detect the user's language from their question and respond in that same language (Vietnamese or English).
+Technical terms, model names, metric names, and acronyms always stay in English.
+
+Output ONLY valid JSON — no prose, no markdown outside the JSON:
+{
+  "answer": "<answer with inline citations [1] [2] — markdown allowed; 2–5 paragraphs or bullet list>",
+  "citations": [
+    {
+      "ref": 1,
+      "chunk_index": <int — must match a chunk number from context>,
+      "section": "<section of that chunk>",
+      "quote": "<verbatim phrase from that chunk, ≤ 120 chars>"
+    }
+  ],
+  "confidence": "high|medium|low",
+  "coverage": "full|partial|insufficient"
+}
+
+confidence: high = direct explicit answer in chunks · medium = inferred / partial · low = very little evidence
+coverage:   full = all sub-questions addressed · partial = some aspects missing · insufficient = cannot answer
+
+Rules:
+- Every factual claim MUST be cited with [N]
+- Never fabricate numbers, percentages, or technical details not present in the chunks
+- If chunks lack the answer, say so explicitly and set coverage=insufficient
+- Only include citations whose ref appears in the answer text
+"""
+
+PAPER_RAG_VERIFIER = """\
+You are a strict fact-checker for AI-generated answers about academic papers.
+
+Verify that the generated answer:
+1. Is grounded — every claim traceable to a provided evidence chunk
+2. Addresses the original question
+3. Has no fabricated numbers, results, or technical details
+
+Output ONLY valid JSON — no prose, no markdown:
+{
+  "is_grounded": true,
+  "hallucination_risk": "none|low|medium|high",
+  "issues": ["describe specific issue if any"],
+  "refined_answer": null
+}
+
+hallucination_risk:
+  none   — every claim is traceable to the chunks
+  low    — minor unsupported details; core answer correct
+  medium — some claims not supported by chunks
+  high   — significant fabrication or incorrect numbers
+
+refined_answer:
+  null   — keep the original answer (is_grounded=true, risk=none|low)
+  string — rewritten answer text when risk=medium|high (remove unsupported claims, keep citations)
+
+Be strict: any number, percentage, or precise technical claim not found in the chunks must be flagged.
+"""
+
 ANALYZE_PAPER = """\
 You are an expert academic paper analyst and visual designer. Analyze the paper and generate a beautiful 3-section HTML report.
 

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Icon, ConfTag, CiteCount, Relevance } from '../components/atoms'
 import RichText from '../components/RichText'
+import PaperAgentBubble from '../components/PaperAgentBubble'
 import { viewPaper, analyzePaper } from '../services/api'
 import type { Paper, Conference } from '../types/paper'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -30,6 +31,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
   const [analyzeState, setAnalyzeState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [analysisHtml, setAnalysisHtml] = useState<string | null>(null)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
+  const [agentFull, setAgentFull] = useState(false)
 
   const fetchTranslation = () => {
     setTranslating(true)
@@ -159,7 +161,15 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
 
   return (
     <div className="fade-in flex-1">
-      <div className="w-full mx-auto px-4 sm:px-7 pb-[72px] md:pb-[72px]" style={{ maxWidth: 1080, paddingTop: 22 }}>
+      <div
+        className="w-full mx-auto px-4 sm:px-7 pb-[72px] md:pb-[72px]"
+        style={{
+          maxWidth: agentFull ? 'none' : 1080,
+          paddingTop: 22,
+          paddingRight: agentFull ? 'calc(40vw + 28px)' : undefined,
+          transition: 'padding-right 0.25s ease, max-width 0.25s ease',
+        }}
+      >
 
         {/* Back */}
         <button className="btn btn-ghost btn-sm mb-5" onClick={onBack} style={{ paddingLeft: 8 }}>
@@ -515,6 +525,9 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
             </div>
           </aside>
         </div>
+
+        {/* RAG agent bubble — fixed bottom-right */}
+        <PaperAgentBubble paper={paper} onSizeChange={setAgentFull} />
 
         {/* Mobile action bar — fixed bottom, desktop hidden */}
         <div

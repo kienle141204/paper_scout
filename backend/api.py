@@ -1420,3 +1420,326 @@ class ProfileGetRequest(BaseModel):
 @app.post("/profile/get")
 def profile_get(req: ProfileGetRequest) -> dict[str, Any]:
     return {"profile": get_profile(Path(req.db_path) if req.db_path else DEFAULT_DB_PATH)}
+
+
+# ── RAG paper agent ───────────────────────────────────────────────────────────
+
+from agent.tools.pdf_fetcher import fetch_pdf
+from agent.tools.pdf_parser import parse_pdf
+from agent.tools.chunker import make_chunks
+from agent.tools.rag_store import is_ingested, store_chunks, retrieve_chunks, retrieve_by_section, is_configured as rag_configured
+from agent.tools.prompts import PAPER_RAG_PLANNER, PAPER_RAG_ANSWERER, PAPER_RAG_VERIFIER
+
+
+def _embed_one(text: str, *, provider: str, embed_model: str, base_url: str | None) -> list[float]:
+    if provider == "openai":
+        from agent.tools.openai_embeddings import embed
+        return embed(text=text, model=embed_model, base_url=base_url)
+    from agent.tools.gemini_embeddings import embed as g_embed
+    return g_embed(text=text, model=embed_model, base_url=base_url or "https://generativelanguage.googleapis.com/v1beta")
+
+
+def _llm_json(
+    system: str,
+    user: str,
+    *,
+    provider: str,
+    model: str,
+    base_url: str | None,
+    messages: list[dict] | None = None,
+) -> dict[str, Any]:
+    import json as _json, re as _re
+    from agent.tools.llm_text import generate_text
+    raw = generate_text(provider=provider, system=system, user=user, model=model, base_url=base_url, messages=messages)
+    m = _re.search(r"\{.*\}", raw, _re.DOTALL)
+    if m:
+        try:
+            return _json.loads(m.group())
+        except Exception:
+            pass
+    return {}
+
+
+class IngestRequest(BaseModel):
+    paper_id: str
+    title: str
+    abstract: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    url: str | None = None
+    conference: str | None = None
+    year: int | None = None
+    force: bool = False
+    config_path: str | None = None
+
+
+@app.post("/api/papers/ingest")
+def api_papers_ingest(req: IngestRequest) -> dict[str, Any]:
+    """Download, parse, chunk, embed and store a paper for RAG.
+
+    Idempotent — skips processing if paper is already ingested (unless force=True).
+    Falls back to abstract-only if the PDF cannot be fetched.
+    """
+    if not rag_configured():
+        raise HTTPException(status_code=503, detail="Vector store (Supabase) chưa được cấu hình.")
+
+    if not req.force and is_ingested(req.paper_id):
+        return {"paper_id": req.paper_id, "already_done": True, "chunk_count": -1, "source": "cached"}
+
+    cfg = _cfg(req.config_path)
+    provider = cfg.llm_provider
+    model = "text-embedding-3-small" if provider == "openai" else "gemini-embedding-001"
+    base_url = cfg.openai_base_url if provider == "openai" else cfg.gemini_base_url
+
+    # 1. Try to fetch + parse PDF
+    source = "abstract"
+    chunks = []
+    pdf_path = None
+    try:
+        if req.url:
+            pdf_path = fetch_pdf(req.url)
+        if pdf_path:
+            parsed = parse_pdf(pdf_path)
+            chunks = make_chunks(
+                abstract=parsed.abstract or req.abstract,
+                method=parsed.method,
+                experiments=parsed.experiments,
+                full_text=parsed.text if not (parsed.abstract or parsed.method) else None,
+            )
+            source = "pdf"
+    except Exception:
+        chunks = []
+    finally:
+        if pdf_path and pdf_path.exists():
+            try:
+                pdf_path.unlink()
+            except Exception:
+                pass
+
+    # 2. Fall back to abstract-only if PDF failed
+    if not chunks and req.abstract:
+        from agent.tools.chunker import split_text, Chunk
+        abstract_chunks = split_text(req.abstract)
+        if not abstract_chunks:
+            abstract_chunks = [Chunk(text=req.abstract, section="abstract", chunk_index=0, token_count=len(req.abstract)//4)]
+        chunks = abstract_chunks
+        source = "abstract"
+
+    if not chunks:
+        raise HTTPException(status_code=422, detail="Không thể tạo chunks — không có PDF hay abstract.")
+
+    # 3. Embed all chunks (batch for OpenAI, parallel for Gemini)
+    texts = [c.text for c in chunks]
+    try:
+        if provider == "openai":
+            from agent.tools.openai_embeddings import embed_batch
+            embeddings = embed_batch(texts=texts, model=model, base_url=base_url)
+        else:
+            from agent.tools.gemini_embeddings import embed as gemini_embed
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=min(len(texts), 8)) as pool:
+                embeddings = list(pool.map(
+                    lambda t: gemini_embed(text=t, model=model, base_url=base_url or "https://generativelanguage.googleapis.com/v1beta"),
+                    texts,
+                ))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Lỗi embedding: {e}")
+
+    # 4. Store
+    rows = [
+        {
+            "chunk_index": c.chunk_index,
+            "section": c.section,
+            "text": c.text,
+            "token_count": c.token_count,
+            "embedding": embeddings[i],
+        }
+        for i, c in enumerate(chunks)
+    ]
+    store_chunks(req.paper_id, rows)
+
+    return {
+        "paper_id": req.paper_id,
+        "already_done": False,
+        "chunk_count": len(chunks),
+        "source": source,
+    }
+
+
+class RagAskRequest(BaseModel):
+    paper_id: str
+    question: str
+    history: list[ChatMessageModel] = Field(default_factory=list)
+    # Optional metadata — used for auto-ingest if paper not yet indexed
+    title: str | None = None
+    abstract: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    url: str | None = None
+    conference: str | None = None
+    year: int | None = None
+    config_path: str | None = None
+
+
+@app.post("/api/papers/ask")
+def api_papers_ask(req: RagAskRequest) -> dict[str, Any]:
+    """Answer a question about a specific paper using RAG.
+
+    Auto-ingests the paper if not yet indexed (using metadata fields).
+    Retrieves the most relevant stored chunks, then calls the LLM with them as
+    grounded context. Returns the answer and citation metadata.
+    """
+    if not rag_configured():
+        raise HTTPException(status_code=503, detail="Vector store (Supabase) chưa được cấu hình.")
+
+    if not is_ingested(req.paper_id):
+        # Auto-ingest if metadata is available
+        if req.title or req.abstract:
+            try:
+                api_papers_ingest(IngestRequest(
+                    paper_id=req.paper_id,
+                    title=req.title or "Unknown",
+                    abstract=req.abstract,
+                    authors=req.authors,
+                    url=req.url,
+                    conference=req.conference,
+                    year=req.year,
+                    config_path=req.config_path,
+                ))
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=503, detail=f"Auto-ingest thất bại: {e}")
+        else:
+            raise HTTPException(status_code=404, detail="Paper chưa được ingest. Hãy gọi /api/papers/ingest trước.")
+
+    cfg = _cfg(req.config_path)
+    provider = cfg.llm_provider
+    embed_model = "text-embedding-3-small" if provider == "openai" else "gemini-embedding-001"
+    llm_model = cfg.openai_model if provider == "openai" else cfg.gemini_model
+    cheap_model = cfg.openai_cheap_model if provider == "openai" else cfg.gemini_cheap_model
+    base_url = cfg.openai_base_url if provider == "openai" else cfg.gemini_base_url
+
+    embed_kwargs = dict(provider=provider, embed_model=embed_model, base_url=base_url)
+
+    # ── PHASE 1: PLAN ──────────────────────────────────────────────────────────
+    # Decompose question into sub-questions + retrieval queries + target sections
+    paper_hint = f"Title: {req.title or 'Unknown'}"
+    if req.abstract:
+        paper_hint += f"\nAbstract (excerpt): {req.abstract[:500]}"
+    try:
+        plan = _llm_json(
+            PAPER_RAG_PLANNER,
+            f"Paper:\n{paper_hint}\n\nQuestion: {req.question}",
+            provider=provider, model=cheap_model, base_url=base_url,
+        )
+    except Exception:
+        plan = {}
+
+    sub_questions: list[str] = plan.get("sub_questions") or []
+    search_queries: list[str] = plan.get("search_queries") or []
+    sections: list[str] = plan.get("sections") or []
+    all_queries = list(dict.fromkeys([req.question] + search_queries))[:5]
+
+    # ── PHASE 2: GATHER ────────────────────────────────────────────────────────
+    # Parallel semantic search across all queries + section-targeted retrieval
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _search_query(q: str) -> list[dict[str, Any]]:
+        try:
+            emb = _embed_one(q, **embed_kwargs)
+            return retrieve_chunks(req.paper_id, emb, top_k=4)
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=min(len(all_queries), 4)) as pool:
+        gathered_batches: list[list[dict]] = list(pool.map(_search_query, all_queries))
+
+    for sec in sections[:3]:
+        gathered_batches.append(retrieve_by_section(req.paper_id, sec, top_k=3))
+
+    chunks_map: dict[int, dict[str, Any]] = {}
+    for batch in gathered_batches:
+        for c in batch:
+            chunks_map[c["chunk_index"]] = c
+
+    all_chunks = sorted(chunks_map.values(), key=lambda c: c["chunk_index"])[:14]
+    if not all_chunks:
+        raise HTTPException(status_code=404, detail="Không tìm thấy chunks liên quan.")
+
+    # ── PHASE 3: ANSWER ────────────────────────────────────────────────────────
+    # Build numbered context then call standard LLM for a grounded answer
+    context_parts = []
+    for i, ch in enumerate(all_chunks, 1):
+        section_label = ch.get("section", "body").upper()
+        context_parts.append(f"[{i}] ({section_label})\n{ch['text']}")
+    context_str = "\n\n".join(context_parts)
+
+    history_msgs = [{"role": m.role, "content": m.content} for m in req.history[-8:]]
+    history_msgs.append({
+        "role": "user",
+        "content": (
+            f"Evidence chunks:\n\n{context_str}\n\n"
+            f"---\nQuestion: {req.question}\n"
+            f"Sub-questions to address: {sub_questions or [req.question]}"
+        ),
+    })
+
+    try:
+        answer_data = _llm_json(
+            PAPER_RAG_ANSWERER, "",
+            provider=provider, model=llm_model, base_url=base_url,
+            messages=history_msgs,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Lỗi LLM (answer): {e}")
+
+    # ── PHASE 4: VERIFY ────────────────────────────────────────────────────────
+    # Cheap LLM checks groundedness, flags hallucinations, optionally refines
+    try:
+        verification = _llm_json(
+            PAPER_RAG_VERIFIER,
+            (
+                f"Original question: {req.question}\n\n"
+                f"Generated answer:\n{answer_data.get('answer', '')}\n\n"
+                f"Evidence chunks:\n{context_str}"
+            ),
+            provider=provider, model=cheap_model, base_url=base_url,
+        )
+    except Exception:
+        verification = {}
+
+    final_answer = str(verification.get("refined_answer") or answer_data.get("answer") or "").strip()
+
+    # Validate citations — keep only those referencing real chunk indices
+    chunk_index_set = {c["chunk_index"] for c in all_chunks}
+    citations = []
+    for cite in (answer_data.get("citations") or []):
+        chunk_idx = cite.get("chunk_index")
+        matched = chunks_map.get(chunk_idx) if chunk_idx is not None else None
+        citations.append({
+            "ref": cite.get("ref"),
+            "chunk_index": chunk_idx,
+            "section": cite.get("section") or (matched or {}).get("section", "body"),
+            "quote": str(cite.get("quote") or "")[:160],
+            "valid": chunk_idx in chunk_index_set,
+        })
+
+    return {
+        "answer": final_answer,
+        "citations": citations,
+        "chunks": [
+            {"chunk_index": ch["chunk_index"], "section": ch.get("section", "body"), "text": ch["text"][:500]}
+            for ch in all_chunks
+        ],
+        "confidence": answer_data.get("confidence", "medium"),
+        "coverage": answer_data.get("coverage", "partial"),
+        "plan": {
+            "sub_questions": sub_questions,
+            "queries_used": all_queries,
+            "sections_searched": sections,
+        },
+        "verification": {
+            "is_grounded": verification.get("is_grounded", True),
+            "hallucination_risk": str(verification.get("hallucination_risk") or "low"),
+            "issues": verification.get("issues") or [],
+        },
+    }
