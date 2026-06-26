@@ -29,6 +29,7 @@ class IngestRequest:
     abstract: str | None = None
     authors: list[str] = field(default_factory=list)
     url: str | None = None
+    pdf_url: str | None = None
     conference: str | None = None
     year: int | None = None
     force: bool = False
@@ -80,8 +81,8 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
     chunks: list[Chunk] = []
     pdf_path = None
     try:
-        if req.url:
-            pdf_path = fetch_pdf(req.url)
+        if req.pdf_url or req.url:
+            pdf_path = fetch_pdf(req.pdf_url or req.url)
         if pdf_path:
             parsed = parse_pdf(pdf_path)
             chunks = make_chunks(

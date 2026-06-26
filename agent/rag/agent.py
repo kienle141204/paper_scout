@@ -32,6 +32,7 @@ class RagAskParams:
     abstract: str | None = None
     authors: list[str] = field(default_factory=list)
     url: str | None = None
+    pdf_url: str | None = None
     conference: str | None = None
     year: int | None = None
 
@@ -90,7 +91,8 @@ def run_rag_ask(params: RagAskParams, *, cfg: Config, session_id: str | None = N
             try:
                 ingest_paper(IngestRequest(
                     paper_id=params.paper_id, title=params.title or "Unknown", abstract=params.abstract,
-                    authors=params.authors, url=params.url, conference=params.conference, year=params.year,
+                    authors=params.authors, url=params.url, pdf_url=params.pdf_url,
+                    conference=params.conference, year=params.year,
                 ), cfg=cfg)
             except IngestError:
                 raise

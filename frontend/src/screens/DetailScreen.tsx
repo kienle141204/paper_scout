@@ -15,10 +15,11 @@ interface Props {
   onToggleSave: () => void
   onBack: () => void
   onOpen: (id: string) => void
+  onOpenReader: (id: string) => void
   onNeedAuth: () => void
 }
 
-export default function DetailScreen({ paper, saved, related, conferences, onToggleSave, onBack, onOpen, onNeedAuth }: Props) {
+export default function DetailScreen({ paper, saved, related, conferences, onToggleSave, onBack, onOpen, onOpenReader, onNeedAuth }: Props) {
   const { lang: langPref, t } = useLanguage()
   const { isLoggedIn } = useAuth()
   const dt = t.detail
@@ -466,12 +467,19 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
           <aside className="hidden md:block" style={{ width: 268, flexShrink: 0 }}>
             <div className="sticky" style={{ top: 76 }}>
               <div className="card" style={{ padding: 18 }}>
+                <button
+                  className="btn btn-accent btn-block mb-2"
+                  onClick={() => onOpenReader(paper.id)}
+                >
+                  <Icon name="doc" size={16} /> {dt.readBtn}
+                </button>
+
                 {paper.url && (
                   <a
                     href={paper.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="btn btn-accent btn-block mb-2"
+                    className="btn btn-outline btn-block mb-2"
                   >
                     <Icon name="download" size={16} /> {dt.viewOnline}
                   </a>
@@ -540,17 +548,13 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
             gap: 8,
           }}
         >
-          {paper.url && (
-            <a
-              href={paper.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn btn-accent"
-              style={{ flex: 1 }}
-            >
-              <Icon name="download" size={15} /> PDF
-            </a>
-          )}
+          <button
+            className="btn btn-accent"
+            style={{ flex: 1 }}
+            onClick={() => onOpenReader(paper.id)}
+          >
+            <Icon name="doc" size={15} /> {dt.readBtn}
+          </button>
           <button
             className={`btn btn-sm ${saved ? 'btn-primary' : 'btn-outline'}`}
             onClick={(e) => { e.stopPropagation(); handleToggleSave() }}

@@ -29,10 +29,29 @@ interface BackendPaper {
   venue?: string
   conference?: string
   url?: string
+  pdf_url?: string
   citation_count?: number
   relevance_score?: number
   key_contributions?: string[]
   tags?: string[]
+}
+
+interface AgentPaper {
+  source: string
+  id: string | null
+  title: string
+  year?: number | null
+  venue?: string | null
+  url?: string | null
+  doi?: string | null
+  abstract?: string | null
+  authors?: string[]
+  keywords?: string[]
+}
+
+export interface SearchSynthesisCitation {
+  ref: number
+  paper_id: string
 }
 
 interface BackendSearchResponse {
@@ -41,6 +60,8 @@ interface BackendSearchResponse {
   query: string
   has_more?: boolean
   corrected_query?: string | null
+  synthesis?: string | null
+  synthesis_citations?: SearchSynthesisCitation[]
 }
 
 // ── Mappers ──────────────────────────────────────
@@ -56,10 +77,27 @@ function mapPaper(p: BackendPaper): Paper {
     conf: p.conference,
     venue: p.venue,
     url: p.url,
+    pdfUrl: p.pdf_url,
     citations: p.citation_count ?? null,
     relevance: Math.round((p.relevance_score ?? 0) * 100),
     keywords: p.tags ?? [],
     keyContributions: p.key_contributions,
+  }
+}
+
+function mapAgentPaper(p: AgentPaper): Paper {
+  return {
+    id: p.id ?? p.doi ?? p.url ?? p.title,
+    titleEn: p.title,
+    abstractEn: p.abstract ?? undefined,
+    authors: p.authors ?? [],
+    year: p.year ?? undefined,
+    conf: p.venue ?? undefined,
+    venue: p.venue ?? undefined,
+    url: p.url ?? undefined,
+    citations: null,
+    relevance: 0,
+    keywords: p.keywords ?? [],
   }
 }
 
@@ -111,6 +149,7 @@ export interface SearchParams {
   limit?: number
   offset?: number
   correctedQuery?: string | null
+  includeSynthesis?: boolean
 }
 
 export interface ParsedQuery {
@@ -131,6 +170,97 @@ export async function parseQuery(query: string): Promise<ParsedQuery> {
   })
   if (!res.ok) {
     return { keywords: query, keyword_variants: [], venues: [], year_from: null, year_to: null, corrected_query: null, fallback: true }
+  }
+  return res.json()
+}
+
+export interface AgentStatus {
+  paper_cache_configured: boolean
+  vector_store_configured: boolean
+  paper_ingested?: boolean
+}
+
+export async function getAgentStatus(paperId?: string): Promise<AgentStatus> {
+  const qs = paperId ? `?paper_id=${encodeURIComponent(paperId)}` : ''
+  const res = await fetch(`${BASE}/api/agent/status${qs}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getPaperCitation(params: {
+  doi: string
+  formats?: Array<'apa' | 'bibtex'>
+}): Promise<{ doi: string; apa?: string; bibtex?: string }> {
+  const res = await fetch(`${BASE}/api/papers/citation`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ doi: params.doi, formats: params.formats ?? ['apa', 'bibtex'] }),
+  })
+  if (!res.ok) {
+    const err: { detail?: string } = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function recommendPapers(params: {
+  work_id: string
+  limit?: number
+}): Promise<{ related: Paper[]; citing: Paper[] }> {
+  const res = await fetch(`${BASE}/api/papers/recommend`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ work_id: params.work_id, limit: params.limit ?? 25 }),
+  })
+  if (!res.ok) {
+    const err: { detail?: string } = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  const data: { related: AgentPaper[]; citing: AgentPaper[] } = await res.json()
+  return {
+    related: data.related.map(mapAgentPaper),
+    citing: data.citing.map(mapAgentPaper),
+  }
+}
+
+export async function scorePaperRelevance(params: {
+  query: string
+  text: string
+  provider?: 'openai' | 'gemini'
+  model?: string
+  base_url?: string
+}): Promise<number> {
+  const res = await fetch(`${BASE}/api/papers/score`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  })
+  if (!res.ok) {
+    const err: { detail?: string } = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  const data: { score: number } = await res.json()
+  return data.score
+}
+
+export interface PdfParseResult {
+  abstract: string | null
+  method: string | null
+  experiments: string | null
+  table_mentions: string[]
+  figure_mentions: string[]
+}
+
+export async function parsePaperPdf(file: File, maxPages = 8): Promise<PdfParseResult> {
+  const body = new FormData()
+  body.append('file', file)
+  const res = await fetch(`${BASE}/api/papers/pdf/parse?max_pages=${maxPages}`, {
+    method: 'POST',
+    body,
+  })
+  if (!res.ok) {
+    const err: { detail?: string } = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
   }
   return res.json()
 }
@@ -255,7 +385,15 @@ export async function updateLanguagePref(token: string, lang: 'en' | 'vi'): Prom
 
 export async function searchPapers(
   params: SearchParams,
-): Promise<{ papers: Paper[]; total: number; query: string; hasMore: boolean; correctedQuery: string | null }> {
+): Promise<{
+  papers: Paper[]
+  total: number
+  query: string
+  hasMore: boolean
+  correctedQuery: string | null
+  synthesis: string | null
+  synthesisCitations: SearchSynthesisCitation[]
+}> {
   const res = await fetch(`${BASE}/api/papers/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -269,6 +407,7 @@ export async function searchPapers(
       limit: params.limit ?? 20,
       offset: params.offset ?? 0,
       corrected_query: params.correctedQuery ?? null,
+      include_synthesis: params.includeSynthesis ?? false,
     }),
   })
 
@@ -288,6 +427,8 @@ export async function searchPapers(
     query: data.query,
     hasMore: data.has_more ?? false,
     correctedQuery: data.corrected_query ?? null,
+    synthesis: data.synthesis ?? null,
+    synthesisCitations: data.synthesis_citations ?? [],
   }
 }
 
@@ -299,6 +440,7 @@ export interface IngestPaperParams {
   abstract?: string
   authors?: string[]
   url?: string
+  pdf_url?: string
   conference?: string
   year?: number
   force?: boolean
@@ -326,6 +468,7 @@ export interface AskPaperParams {
   abstract?: string
   authors?: string[]
   url?: string
+  pdf_url?: string
   conference?: string
   year?: number
 }

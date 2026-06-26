@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 import bcrypt as _bcrypt_lib
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt as _jwt
 from pydantic import BaseModel, Field
@@ -51,8 +52,12 @@ def _get_current_user(authorization: str = Header(...)) -> dict:
 
 from agent.config import DEFAULT_CONFIG_PATH, load_config
 from agent.tools.abstract_tools import summarize_abstract, translate_abstract_vi
+from agent.tools.citation import apa_from_doi, bibtex_from_doi
+from agent.tools.pdf_parser import parse_pdf
 from agent.tools.query_parse import parse_query
 from agent.tools.prompts import ANALYZE_PAPER, CHAT_AGENT
+from agent.tools.recommend import recommend_from_openalex
+from agent.tools.relevance import score_relevance
 from agent.tools.library import (
     DEFAULT_DB_PATH,
     add_paper,
@@ -985,10 +990,117 @@ def api_parse_query(req: ParseQueryRequest) -> dict[str, Any]:
     }
 
 
+class CitationRequest(BaseModel):
+    doi: str
+    formats: list[Literal["apa", "bibtex"]] = Field(default_factory=lambda: ["apa", "bibtex"])
+
+
+@app.post("/api/papers/citation")
+def api_papers_citation(req: CitationRequest) -> dict[str, Any]:
+    formats = set(req.formats)
+    if not req.doi.strip():
+        raise HTTPException(status_code=400, detail="doi is required")
+    if not formats or not formats.issubset({"apa", "bibtex"}):
+        raise HTTPException(status_code=400, detail="formats must contain apa and/or bibtex")
+
+    out: dict[str, Any] = {"doi": req.doi.strip()}
+    try:
+        if "apa" in formats:
+            out["apa"] = apa_from_doi(req.doi)
+        if "bibtex" in formats:
+            out["bibtex"] = bibtex_from_doi(req.doi)
+    except requests.HTTPError:
+        raise HTTPException(status_code=502, detail="Citation provider returned an error.")
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Cannot connect to citation provider.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return out
+
+
+class RecommendRequest(BaseModel):
+    work_id: str
+    limit: int = Field(default=25, ge=1, le=100)
+    config_path: str | None = None
+
+
+@app.post("/api/papers/recommend")
+def api_papers_recommend(req: RecommendRequest) -> dict[str, Any]:
+    cfg = _cfg(req.config_path)
+    try:
+        rec = recommend_from_openalex(
+            seed_work_id=req.work_id,
+            limit=req.limit,
+            openalex_email=cfg.openalex_email,
+        )
+    except requests.HTTPError:
+        raise HTTPException(status_code=502, detail="OpenAlex returned an error.")
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Cannot connect to OpenAlex.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "related": [p.to_dict() for p in rec.get("related", [])],
+        "citing": [p.to_dict() for p in rec.get("citing", [])],
+    }
+
+
+class ScoreRequest(BaseModel):
+    query: str
+    text: str
+    provider: Literal["openai", "gemini"] | None = None
+    model: str | None = None
+    base_url: str | None = None
+    config_path: str | None = None
+
+
+@app.post("/api/papers/score")
+def api_papers_score(req: ScoreRequest) -> dict[str, Any]:
+    cfg = _cfg(req.config_path)
+    provider = req.provider or cfg.llm_provider
+    model = req.model or ("text-embedding-3-small" if provider == "openai" else "gemini-embedding-001")
+    base_url = req.base_url or (cfg.openai_base_url if provider == "openai" else cfg.gemini_base_url)
+    try:
+        score = score_relevance(
+            query=req.query,
+            text=req.text,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Embedding provider error: {e}")
+    return {"score": score}
+
+
+@app.post("/api/papers/pdf/parse")
+async def api_papers_pdf_parse(file: UploadFile = File(...), max_pages: int | None = 8) -> dict[str, Any]:
+    suffix = Path(file.filename or "").suffix or ".pdf"
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            temp_path = Path(tmp.name)
+            tmp.write(await file.read())
+        result = parse_pdf(temp_path, max_pages=max_pages)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        await file.close()
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+    return result.to_dict()
+
+
 class FetchRequest(BaseModel):
     url: str
 
 
+@app.post("/api/papers/fetch")
 @app.post("/fetch")
 def fetch(req: FetchRequest) -> dict[str, Any]:
     p = fetch_paper_from_url(req.url)
@@ -1001,6 +1113,7 @@ class DetailRequest(BaseModel):
     config_path: str | None = None
 
 
+@app.post("/api/papers/detail")
 @app.post("/detail")
 def detail(req: DetailRequest) -> dict[str, Any]:
     cfg = _cfg(req.config_path)
@@ -1019,6 +1132,7 @@ class TranslateRequest(BaseModel):
     config_path: str | None = None
 
 
+@app.post("/api/papers/translate")
 @app.post("/translate")
 def translate(req: TranslateRequest) -> dict[str, Any]:
     cfg = _cfg(req.config_path)
@@ -1040,6 +1154,7 @@ class SummarizeRequest(BaseModel):
     config_path: str | None = None
 
 
+@app.post("/api/papers/summarize")
 @app.post("/summarize")
 def summarize(req: SummarizeRequest) -> dict[str, Any]:
     cfg = _cfg(req.config_path)
@@ -1061,6 +1176,7 @@ class LibraryAddRequest(BaseModel):
     note: str | None = None
 
 
+@app.post("/api/library/add")
 @app.post("/library/add")
 def library_add(req: LibraryAddRequest) -> dict[str, Any]:
     if not req.url and not req.paper:
@@ -1077,6 +1193,7 @@ class LibraryListRequest(BaseModel):
     limit: int = 50
 
 
+@app.post("/api/library/list")
 @app.post("/library/list")
 def library_list(req: LibraryListRequest) -> dict[str, Any]:
     rows = list_papers(Path(req.db_path) if req.db_path else DEFAULT_DB_PATH, tag=req.tag, q=req.q, limit=req.limit)
@@ -1088,6 +1205,7 @@ class LibraryDeleteRequest(BaseModel):
     row_id: int
 
 
+@app.post("/api/library/delete")
 @app.post("/library/delete")
 def library_delete(req: LibraryDeleteRequest) -> dict[str, Any]:
     delete_paper(Path(req.db_path) if req.db_path else DEFAULT_DB_PATH, row_id=req.row_id)
@@ -1100,6 +1218,7 @@ class LibraryUpdateTagsRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+@app.post("/api/library/tags")
 @app.post("/library/tags")
 def library_tags(req: LibraryUpdateTagsRequest) -> dict[str, Any]:
     update_tags(Path(req.db_path) if req.db_path else DEFAULT_DB_PATH, row_id=req.row_id, tags=req.tags)
@@ -1112,6 +1231,7 @@ class LibraryUpdateNoteRequest(BaseModel):
     note: str
 
 
+@app.post("/api/library/note")
 @app.post("/library/note")
 def library_note(req: LibraryUpdateNoteRequest) -> dict[str, Any]:
     update_note(Path(req.db_path) if req.db_path else DEFAULT_DB_PATH, row_id=req.row_id, note=req.note)
@@ -1124,6 +1244,7 @@ class ProfileSetRequest(BaseModel):
     value: str
 
 
+@app.post("/api/profile/set")
 @app.post("/profile/set")
 def profile_set(req: ProfileSetRequest) -> dict[str, Any]:
     set_profile(Path(req.db_path) if req.db_path else DEFAULT_DB_PATH, key=req.key, value=req.value)
@@ -1134,6 +1255,7 @@ class ProfileGetRequest(BaseModel):
     db_path: str | None = None
 
 
+@app.post("/api/profile/get")
 @app.post("/profile/get")
 def profile_get(req: ProfileGetRequest) -> dict[str, Any]:
     return {"profile": get_profile(Path(req.db_path) if req.db_path else DEFAULT_DB_PATH)}
@@ -1142,9 +1264,21 @@ def profile_get(req: ProfileGetRequest) -> dict[str, Any]:
 # ── RAG paper agent ───────────────────────────────────────────────────────────
 
 from agent.tools.rag_store import is_configured as rag_configured
+from agent.tools.rag_store import is_ingested as rag_is_ingested
 from agent.rag.ingest import IngestError, ingest_paper
 from agent.rag.ingest import IngestRequest as _IngestArgs
 from agent.rag.agent import RagAskParams, run_rag_ask
+
+
+@app.get("/api/agent/status")
+def api_agent_status(paper_id: str | None = None) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "paper_cache_configured": is_configured(),
+        "vector_store_configured": rag_configured(),
+    }
+    if paper_id:
+        status["paper_ingested"] = rag_is_ingested(paper_id)
+    return status
 
 
 class IngestRequest(BaseModel):
@@ -1153,6 +1287,7 @@ class IngestRequest(BaseModel):
     abstract: str | None = None
     authors: list[str] = Field(default_factory=list)
     url: str | None = None
+    pdf_url: str | None = None
     conference: str | None = None
     year: int | None = None
     force: bool = False
@@ -1169,7 +1304,7 @@ def api_papers_ingest(req: IngestRequest) -> dict[str, Any]:
     cfg = _cfg(req.config_path)
     args = _IngestArgs(
         paper_id=req.paper_id, title=req.title, abstract=req.abstract,
-        authors=req.authors, url=req.url, conference=req.conference,
+        authors=req.authors, url=req.url, pdf_url=req.pdf_url, conference=req.conference,
         year=req.year, force=req.force,
     )
     try:
@@ -1188,6 +1323,7 @@ class RagAskRequest(BaseModel):
     abstract: str | None = None
     authors: list[str] = Field(default_factory=list)
     url: str | None = None
+    pdf_url: str | None = None
     conference: str | None = None
     year: int | None = None
     config_path: str | None = None
@@ -1209,7 +1345,7 @@ def api_papers_ask(req: RagAskRequest) -> dict[str, Any]:
         paper_id=req.paper_id, question=req.question,
         history=[{"role": m.role, "content": m.content} for m in req.history],
         title=req.title, abstract=req.abstract, authors=req.authors,
-        url=req.url, conference=req.conference, year=req.year,
+        url=req.url, pdf_url=req.pdf_url, conference=req.conference, year=req.year,
     )
     try:
         result = run_rag_ask(params, cfg=cfg)

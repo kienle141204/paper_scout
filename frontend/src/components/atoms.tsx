@@ -26,6 +26,7 @@ const IC: Record<string, React.ReactElement> = {
   menu:     <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" />,
   settings: <path d="M8 10.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM8 2v1.5M8 12.5V14M2 8h1.5M12.5 8H14M3.5 3.5l1 1M11.5 11.5l1 1M3.5 12.5l1-1M11.5 4.5l1-1" />,
   lock:     <path d="M4.5 6.5V5a3.5 3.5 0 017 0v1.5M3.5 6.5h9a1 1 0 011 1v5a1 1 0 01-1 1h-9a1 1 0 01-1-1v-5a1 1 0 011-1z" />,
+  doc:      <path d="M4.5 2h5L12 4.5V13a.5.5 0 01-.5.5h-7A.5.5 0 014 13V2.5a.5.5 0 01.5-.5zM9 2v2.5h2.5M6 8.5h4M6 11h4" />,
 }
 
 interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'stroke'> {
