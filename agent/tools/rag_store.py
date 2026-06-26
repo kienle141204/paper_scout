@@ -126,6 +126,28 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+def get_all_chunks(paper_id: str) -> list[dict[str, Any]]:
+    """Return every stored chunk for *paper_id* (no embedding field) — used to
+    build a BM25 sparse index over the paper's full chunk corpus.
+    """
+    c = _get_client()
+    if not c:
+        return []
+    try:
+        res = (
+            c.table("paper_chunks")
+            .select("chunk_index,section,text")
+            .eq("paper_id", paper_id)
+            .execute()
+        )
+        return [
+            {"chunk_index": r["chunk_index"], "section": r.get("section") or "body", "text": r["text"]}
+            for r in (res.data or [])
+        ]
+    except Exception:
+        return []
+
+
 def retrieve_chunks(
     paper_id: str,
     query_embedding: list[float],

@@ -6,6 +6,7 @@ import SettingsPanel from './components/SettingsPanel'
 import HomeScreen from './screens/HomeScreen'
 import ResultsScreen from './screens/ResultsScreen'
 import DetailScreen from './screens/DetailScreen'
+import ReaderScreen from './screens/ReaderScreen'
 import SavedScreen from './screens/SavedScreen'
 import ChatScreen from './screens/ChatScreen'
 import type { Paper, Conference, Filters, SortKey, Screen } from './types/paper'
@@ -17,6 +18,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 
 function screenToUrl(screen: Screen, selectedId: string | null, query: string): string {
   if (screen === 'detail' && selectedId) return `/detail/${encodeURIComponent(selectedId)}`
+  if (screen === 'reader' && selectedId) return `/reader/${encodeURIComponent(selectedId)}`
   if (screen === 'results') return query ? `/results?q=${encodeURIComponent(query)}` : '/results'
   if (screen === 'saved') return '/saved'
   if (screen === 'chat') return '/chat'
@@ -28,6 +30,10 @@ function parseInitialUrl(): { screen: Screen; selectedId: string | null } {
   if (path.startsWith('/detail/')) {
     const id = decodeURIComponent(path.slice('/detail/'.length))
     return { screen: 'detail', selectedId: id || null }
+  }
+  if (path.startsWith('/reader/')) {
+    const id = decodeURIComponent(path.slice('/reader/'.length))
+    return { screen: 'reader', selectedId: id || null }
   }
   if (path === '/saved') return { screen: 'saved', selectedId: null }
   if (path === '/chat') return { screen: 'chat', selectedId: null }
@@ -217,6 +223,12 @@ function AppInner() {
     openPaper(paper.id)
   }, [openPaper])
 
+  const openReader = useCallback((id: string) => {
+    setPrevScreen('detail')
+    setSelectedId(id)
+    setScreen('reader')
+  }, [])
+
   const handleBack = useCallback(() => {
     setScreen(prevScreen)
   }, [prevScreen])
@@ -301,6 +313,17 @@ function AppInner() {
           onToggleSave={() => toggleSave(selected.id)}
           onBack={handleBack}
           onOpen={openPaper}
+          onOpenReader={openReader}
+          onNeedAuth={() => setAuthModalOpen(true)}
+        />
+      )}
+
+      {screen === 'reader' && selected && (
+        <ReaderScreen
+          paper={selected}
+          saved={savedIds.includes(selected.id)}
+          onToggleSave={() => toggleSave(selected.id)}
+          onBack={handleBack}
           onNeedAuth={() => setAuthModalOpen(true)}
         />
       )}

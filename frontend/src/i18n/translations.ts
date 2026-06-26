@@ -78,6 +78,15 @@ export const TRANSLATIONS = {
       keywords: 'Keywords',
       viewOnline: 'View online',
       noAbstract: 'Abstract not available.',
+      readBtn: 'Read & ask questions',
+    },
+    reader: {
+      back: 'Back to paper',
+      noPdfTitle: 'No direct PDF available',
+      noPdfDesc: 'This source does not expose a direct PDF link. Showing the abstract instead — the AI assistant will still answer based on it.',
+      viewSource: 'View original page',
+      downloadPdf: 'Open PDF',
+      askPlaceholder: 'Ask about methods, results… (Enter to send)',
     },
     saved: {
       eyebrow: 'Your library',
@@ -219,6 +228,15 @@ export const TRANSLATIONS = {
       keywords: 'Từ khóa',
       viewOnline: 'Xem online',
       noAbstract: 'Không có abstract.',
+      readBtn: 'Đọc & hỏi đáp',
+    },
+    reader: {
+      back: 'Quay lại paper',
+      noPdfTitle: 'Không có PDF trực tiếp',
+      noPdfDesc: 'Nguồn này không cung cấp link PDF trực tiếp. Hiển thị abstract thay thế — trợ lý AI vẫn trả lời dựa trên abstract này.',
+      viewSource: 'Xem trang gốc',
+      downloadPdf: 'Mở PDF',
+      askPlaceholder: 'Hỏi về phương pháp, kết quả… (Enter để gửi)',
     },
     saved: {
       eyebrow: 'Thư viện của bạn',

@@ -43,3 +43,4 @@ backend/.env
 .claude/
 .agents/
 .vercel
+.codex/

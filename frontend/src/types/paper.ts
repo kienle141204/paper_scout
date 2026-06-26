@@ -16,6 +16,7 @@ export interface Paper {
   conf?: string
   venue?: string
   url?: string
+  pdfUrl?: string
   citations: number | null
   relevance: number
   keywords: string[]
@@ -33,7 +34,7 @@ export interface Filters {
 }
 
 export type SortKey = 'relevance' | 'citations' | 'year'
-export type Screen = 'home' | 'results' | 'detail' | 'saved' | 'chat'
+export type Screen = 'home' | 'results' | 'detail' | 'saved' | 'chat' | 'reader'
 
 export const CURRENT_YEAR = new Date().getFullYear()
 export const MIN_YEAR = 2018
