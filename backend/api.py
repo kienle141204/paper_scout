@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -16,7 +16,6 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt as _jwt
 from pydantic import BaseModel, Field
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 # ── JWT / Auth helpers ────────────────────────────────────────────────────────
 
@@ -68,8 +67,9 @@ from agent.tools.major_venues import MAJOR_VENUES, major_search
 from agent.tools.paper_cache import get_cached_analysis, get_cached_paper, is_configured, upsert_analysis, upsert_paper
 from agent.tools.paper_detail import fetch_detail
 from agent.tools.paper_search import search_papers, search_by_invitation
-from agent.tools.relevance import score_batch
 from agent.tools.web_fetch import fetch_paper_from_url
+from agent.search.state import SearchParams
+from agent.search.agent import run_search
 
 # ── Conference metadata ───────────────────────────────────────────────────────
 
@@ -90,35 +90,6 @@ _CONFERENCE_META: dict[str, tuple[str, list[str], str]] = {
     "SIGIR": ("Special Interest Group on Information Retrieval", ["Information Retrieval", "NLP"], "https://sigir.org"),
     "ICSE": ("International Conference on Software Engineering", ["Software Engineering"], "https://www.icse-conferences.org"),
 }
-
-_CONF_VENUE_ALIASES: dict[str, list[str]] = {
-    "NeurIPS": ["NeurIPS", "Neural Information Processing Systems", "NIPS"],
-    "ICML": ["ICML", "International Conference on Machine Learning"],
-    "ICLR": ["ICLR", "International Conference on Learning Representations"],
-    "CVPR": ["CVPR", "Computer Vision and Pattern Recognition"],
-    "ICCV": ["ICCV", "International Conference on Computer Vision"],
-    "ECCV": ["ECCV", "European Conference on Computer Vision"],
-    "ACL": ["ACL", "Association for Computational Linguistics"],
-    "EMNLP": ["EMNLP", "Empirical Methods in Natural Language Processing"],
-    "NAACL": ["NAACL", "North American Chapter of the Association for Computational Linguistics"],
-    "AAAI": ["AAAI", "AAAI Conference on Artificial Intelligence"],
-    "IJCAI": ["IJCAI", "International Joint Conference on Artificial Intelligence"],
-    "KDD": ["KDD", "Knowledge Discovery and Data Mining"],
-    "WWW": ["WWW", "The Web Conference"],
-    "SIGIR": ["SIGIR"],
-    "ICSE": ["ICSE", "International Conference on Software Engineering"],
-}
-
-
-def _normalize_venue(venue: str | None) -> str | None:
-    if not venue:
-        return None
-    v = venue.upper()
-    for key, aliases in _CONF_VENUE_ALIASES.items():
-        if any(alias.upper() in v for alias in aliases):
-            return key
-    return venue
-
 
 app = FastAPI(title="paper-agent-backend")
 
@@ -781,279 +752,25 @@ class PaperSearchRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=50)
     offset: int = Field(default=0, ge=0)
     corrected_query: str | None = None
-
-
-_S2_BASE = "https://api.semanticscholar.org/graph/v1"
-_S2_FIELDS = "paperId,title,abstract,authors,year,venue,externalIds,openAccessPdf,citationCount"
-_S2_API_KEY: str = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
-
-
-def _s2_headers() -> dict[str, str]:
-    return {"x-api-key": _S2_API_KEY} if _S2_API_KEY else {}
-
-
-def _s2_retriable(exc: Exception) -> bool:
-    if isinstance(exc, requests.HTTPError):
-        return exc.response is not None and exc.response.status_code in (429, 500, 503)
-    return isinstance(exc, (requests.ConnectionError, requests.Timeout))
-
-
-@retry(
-    retry=retry_if_exception(_s2_retriable),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=8),
-    reraise=True,
-)
-def _call_s2(params: dict[str, Any]) -> list[dict[str, Any]]:
-    resp = requests.get(f"{_S2_BASE}/paper/search", params=params, headers=_s2_headers(), timeout=30)
-    resp.raise_for_status()
-    return resp.json().get("data", [])
-
-
-def _paper_from_s2(item: dict[str, Any]) -> dict[str, Any]:
-    ext = item.get("externalIds") or {}
-    pdf = item.get("openAccessPdf") or {}
-    url = pdf.get("url") or (f"https://doi.org/{ext['DOI']}" if ext.get("DOI") else None)
-    url = url or f"https://www.semanticscholar.org/paper/{item['paperId']}"
-    return {
-        "paper_id": item["paperId"],
-        "title": item.get("title") or "",
-        "abstract": item.get("abstract"),
-        "summary": None,
-        "title_vi": None,
-        "authors": [
-            {"name": a.get("name", ""), "author_id": a.get("authorId")}
-            for a in (item.get("authors") or [])
-        ],
-        "year": item.get("year"),
-        "venue": item.get("venue") or "",
-        "conference": _normalize_venue(item.get("venue")),
-        "url": url,
-        "citation_count": item.get("citationCount"),
-        "relevance_score": None,
-        "key_contributions": [],
-        "tags": [],
-    }
-
-
-def _score_papers(query: str, papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Compute embedding-based relevance scores in one batched API call, then sort descending."""
-    texts = [
-        f"{p.get('title', '')}. {(p.get('abstract') or '')[:500]}"
-        for p in papers
-    ]
-    try:
-        cfg = _cfg(None)
-        provider = cfg.llm_provider
-        model = "text-embedding-3-small" if provider == "openai" else "gemini-embedding-001"
-        base_url = cfg.openai_base_url if provider == "openai" else cfg.gemini_base_url
-        scores = score_batch(query=query, texts=texts, provider=provider, model=model, base_url=base_url)
-        for paper, score in zip(papers, scores):
-            paper["relevance_score"] = round(score, 4)
-        papers.sort(key=lambda p: p.get("relevance_score") or 0, reverse=True)
-    except Exception:
-        pass  # embedding failed — keep papers as-is with relevance_score=None
-    return papers
-
-
-def _enrich_citation_counts(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Best-effort: batch-lookup citation counts from S2 for papers that lack them.
-
-    Uses the S2 bulk paper endpoint. Failures are silently ignored — papers keep
-    citation_count=None rather than crashing the response.
-    """
-    missing_idx = [i for i, p in enumerate(papers) if p.get("citation_count") is None]
-    if not missing_idx:
-        return papers
-
-    # Build ID list: prefer paper_id (S2 format), else skip (S2 batch needs S2 IDs)
-    ids = [papers[i]["paper_id"] for i in missing_idx if papers[i].get("paper_id")]
-    if not ids:
-        return papers
-
-    try:
-        resp = requests.post(
-            f"{_S2_BASE}/paper/batch",
-            headers=_s2_headers(),
-            params={"fields": "paperId,citationCount"},
-            json={"ids": ids[:100]},  # S2 batch limit is 500 but keep it conservative
-            timeout=15,
-        )
-        if not resp.ok:
-            return papers
-        batch: list[dict[str, Any]] = resp.json()
-        cite_map: dict[str, int] = {}
-        for item in batch:
-            if item and item.get("paperId") and item.get("citationCount") is not None:
-                cite_map[item["paperId"]] = item["citationCount"]
-        for i in missing_idx:
-            pid = papers[i].get("paper_id", "")
-            if pid in cite_map:
-                papers[i] = {**papers[i], "citation_count": cite_map[pid]}
-    except Exception:
-        pass  # enrichment is best-effort
-
-    return papers
-
-
-def _search_fallback(req: PaperSearchRequest) -> list[dict[str, Any]]:
-    """Fallback: search OpenReview across recent major conferences."""
-    import datetime
-
-    current_year = datetime.datetime.now().year
-    venue_keys = [c.lower() for c in req.conferences] if req.conferences else ["iclr", "neurips", "icml"]
-    years: list[int] = []
-    if req.year_from or req.year_to:
-        y_start = req.year_from or current_year - 3
-        y_end = req.year_to or current_year
-        years = list(range(y_start, y_end + 1))
-    else:
-        years = [current_year, current_year - 1]
-
-    def _fetch_one(venue_key: str, year: int) -> list:
-        try:
-            return search_papers(
-                query=req.query,
-                venue_key=venue_key,
-                year=year,
-                limit=req.limit * 2,
-                accepted_only=True,
-            )
-        except Exception:
-            return []
-
-    tasks = [(v, y) for v in venue_keys for y in sorted(years, reverse=True)]
-    all_raw: list = []
-    # max_workers=3 to avoid hammering OpenReview rate limits
-    with ThreadPoolExecutor(max_workers=min(len(tasks), 3)) as pool:
-        futures = [pool.submit(_fetch_one, v, y) for v, y in tasks]
-        for f in as_completed(futures):
-            all_raw.extend(f.result())
-
-    papers: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for p in all_raw:
-        if not p.abstract:
-            continue
-        key = p.id or p.title
-        if key in seen:
-            continue
-        seen.add(key)
-        venue = p.venue or ""
-        conference = _normalize_venue(venue) or (p.id or "").split("/")[0].upper()
-        papers.append({
-            "paper_id": p.id or "",
-            "title": p.title,
-            "abstract": p.abstract,
-            "summary": None,
-            "title_vi": None,
-            "authors": [{"name": a} for a in p.authors],
-            "year": p.year,
-            "venue": venue,
-            "conference": conference,
-            "url": p.url,
-            "citation_count": None,
-            "relevance_score": None,
-            "key_contributions": [],
-            "tags": list(p.keywords),
-        })
-        if len(papers) >= req.limit:
-            break
-    return _enrich_citation_counts(papers)
-
-
-def _build_s2_params(query: str, req: PaperSearchRequest, batch_limit: int) -> dict[str, Any]:
-    """Build S2 search params dict for a given query string."""
-    params: dict[str, Any] = {
-        "query": query,
-        "fields": _S2_FIELDS,
-        "limit": batch_limit,
-        "offset": req.offset,
-    }
-    if req.year_from is not None and req.year_to is not None:
-        params["year"] = f"{req.year_from}-{req.year_to}"
-    elif req.year_from is not None:
-        params["year"] = f"{req.year_from}-"
-    elif req.year_to is not None:
-        params["year"] = f"-{req.year_to}"
-    if len(req.conferences) == 1:
-        aliases = _CONF_VENUE_ALIASES.get(req.conferences[0], [req.conferences[0]])
-        params["venue"] = ",".join(aliases)
-    return params
-
-
-def _collect_from_raw(
-    raw: list[dict[str, Any]],
-    req: PaperSearchRequest,
-    seen_ids: set[str],
-    papers: list[dict[str, Any]],
-) -> None:
-    """Filter and append papers from a S2 raw response into papers list, deduplicating by paper_id."""
-    for item in raw:
-        if len(papers) >= req.limit:
-            break
-        if not item.get("abstract"):
-            continue
-        p = _paper_from_s2(item)
-        if req.conferences and p["conference"] not in req.conferences:
-            continue
-        pid = p["paper_id"]
-        if pid in seen_ids:
-            continue
-        seen_ids.add(pid)
-        papers.append(p)
+    include_synthesis: bool = False
+    config_path: str | None = None
 
 
 @app.post("/api/papers/search")
 def api_papers_search(req: PaperSearchRequest) -> dict[str, Any]:
-    batch_limit = min(req.limit * 3, 100)
-    seen_ids: set[str] = set()
-    papers: list[dict[str, Any]] = []
-    has_more = False
-
-    variant_queries = [v for v in req.keyword_variants[:2] if v and v != req.query]
-
-    # ── Primary S2 query ──────────────────────────────────────────────────────
+    cfg = _cfg(req.config_path)
+    params = SearchParams(
+        query=req.query, keyword_variants=req.keyword_variants, conferences=req.conferences,
+        year_from=req.year_from, year_to=req.year_to, limit=req.limit, offset=req.offset,
+        corrected_query=req.corrected_query, include_synthesis=req.include_synthesis,
+    )
     try:
-        primary_raw = _call_s2(_build_s2_params(req.query, req, batch_limit))
-    except requests.HTTPError as e:
-        status = e.response.status_code if e.response is not None else 0
-        if status == 429:
-            # Rate limited on primary — fall back to OpenReview
-            fallback = _search_fallback(req)
-            fallback = _score_papers(req.query, fallback)
-            has_more = len(fallback) >= req.limit
-            return {
-                "papers": fallback, "total": len(fallback),
-                "query": req.query, "has_more": has_more,
-                "corrected_query": req.corrected_query,
-            }
+        result = run_search(params, cfg=cfg)
+    except requests.HTTPError:
         raise HTTPException(status_code=502, detail="Nguồn dữ liệu phản hồi lỗi. Vui lòng thử lại sau.")
     except requests.RequestException:
         raise HTTPException(status_code=502, detail="Không thể kết nối nguồn dữ liệu. Vui lòng kiểm tra mạng.")
-
-    _collect_from_raw(primary_raw, req, seen_ids, papers)
-    has_more = len(primary_raw) >= batch_limit
-
-    # ── Variant queries in parallel (only if we still need more results) ──────
-    if variant_queries and len(papers) < req.limit:
-        variant_params = [_build_s2_params(q, req, batch_limit) for q in variant_queries]
-        with ThreadPoolExecutor(max_workers=len(variant_params)) as pool:
-            futures = {pool.submit(_call_s2, p): p for p in variant_params}
-            for future in as_completed(futures):
-                if len(papers) >= req.limit:
-                    break
-                try:
-                    _collect_from_raw(future.result(), req, seen_ids, papers)
-                except Exception:
-                    pass  # variant failure is non-critical
-
-    papers = _score_papers(req.query, papers)
-    return {
-        "papers": papers, "total": len(papers),
-        "query": req.query, "has_more": has_more,
-        "corrected_query": req.corrected_query,
-    }
+    return result.to_response_dict()
 
 
 # ── Conversational chat endpoint ──────────────────────────────────────────────
@@ -1424,40 +1141,10 @@ def profile_get(req: ProfileGetRequest) -> dict[str, Any]:
 
 # ── RAG paper agent ───────────────────────────────────────────────────────────
 
-from agent.tools.pdf_fetcher import fetch_pdf
-from agent.tools.pdf_parser import parse_pdf
-from agent.tools.chunker import make_chunks
-from agent.tools.rag_store import is_ingested, store_chunks, retrieve_chunks, retrieve_by_section, is_configured as rag_configured
-from agent.tools.prompts import PAPER_RAG_PLANNER, PAPER_RAG_ANSWERER, PAPER_RAG_VERIFIER
-
-
-def _embed_one(text: str, *, provider: str, embed_model: str, base_url: str | None) -> list[float]:
-    if provider == "openai":
-        from agent.tools.openai_embeddings import embed
-        return embed(text=text, model=embed_model, base_url=base_url)
-    from agent.tools.gemini_embeddings import embed as g_embed
-    return g_embed(text=text, model=embed_model, base_url=base_url or "https://generativelanguage.googleapis.com/v1beta")
-
-
-def _llm_json(
-    system: str,
-    user: str,
-    *,
-    provider: str,
-    model: str,
-    base_url: str | None,
-    messages: list[dict] | None = None,
-) -> dict[str, Any]:
-    import json as _json, re as _re
-    from agent.tools.llm_text import generate_text
-    raw = generate_text(provider=provider, system=system, user=user, model=model, base_url=base_url, messages=messages)
-    m = _re.search(r"\{.*\}", raw, _re.DOTALL)
-    if m:
-        try:
-            return _json.loads(m.group())
-        except Exception:
-            pass
-    return {}
+from agent.tools.rag_store import is_configured as rag_configured
+from agent.rag.ingest import IngestError, ingest_paper
+from agent.rag.ingest import IngestRequest as _IngestArgs
+from agent.rag.agent import RagAskParams, run_rag_ask
 
 
 class IngestRequest(BaseModel):
@@ -1479,90 +1166,17 @@ def api_papers_ingest(req: IngestRequest) -> dict[str, Any]:
     Idempotent — skips processing if paper is already ingested (unless force=True).
     Falls back to abstract-only if the PDF cannot be fetched.
     """
-    if not rag_configured():
-        raise HTTPException(status_code=503, detail="Vector store (Supabase) chưa được cấu hình.")
-
-    if not req.force and is_ingested(req.paper_id):
-        return {"paper_id": req.paper_id, "already_done": True, "chunk_count": -1, "source": "cached"}
-
     cfg = _cfg(req.config_path)
-    provider = cfg.llm_provider
-    model = "text-embedding-3-small" if provider == "openai" else "gemini-embedding-001"
-    base_url = cfg.openai_base_url if provider == "openai" else cfg.gemini_base_url
-
-    # 1. Try to fetch + parse PDF
-    source = "abstract"
-    chunks = []
-    pdf_path = None
+    args = _IngestArgs(
+        paper_id=req.paper_id, title=req.title, abstract=req.abstract,
+        authors=req.authors, url=req.url, conference=req.conference,
+        year=req.year, force=req.force,
+    )
     try:
-        if req.url:
-            pdf_path = fetch_pdf(req.url)
-        if pdf_path:
-            parsed = parse_pdf(pdf_path)
-            chunks = make_chunks(
-                abstract=parsed.abstract or req.abstract,
-                method=parsed.method,
-                experiments=parsed.experiments,
-                full_text=parsed.text if not (parsed.abstract or parsed.method) else None,
-            )
-            source = "pdf"
-    except Exception:
-        chunks = []
-    finally:
-        if pdf_path and pdf_path.exists():
-            try:
-                pdf_path.unlink()
-            except Exception:
-                pass
-
-    # 2. Fall back to abstract-only if PDF failed
-    if not chunks and req.abstract:
-        from agent.tools.chunker import split_text, Chunk
-        abstract_chunks = split_text(req.abstract)
-        if not abstract_chunks:
-            abstract_chunks = [Chunk(text=req.abstract, section="abstract", chunk_index=0, token_count=len(req.abstract)//4)]
-        chunks = abstract_chunks
-        source = "abstract"
-
-    if not chunks:
-        raise HTTPException(status_code=422, detail="Không thể tạo chunks — không có PDF hay abstract.")
-
-    # 3. Embed all chunks (batch for OpenAI, parallel for Gemini)
-    texts = [c.text for c in chunks]
-    try:
-        if provider == "openai":
-            from agent.tools.openai_embeddings import embed_batch
-            embeddings = embed_batch(texts=texts, model=model, base_url=base_url)
-        else:
-            from agent.tools.gemini_embeddings import embed as gemini_embed
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=min(len(texts), 8)) as pool:
-                embeddings = list(pool.map(
-                    lambda t: gemini_embed(text=t, model=model, base_url=base_url or "https://generativelanguage.googleapis.com/v1beta"),
-                    texts,
-                ))
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Lỗi embedding: {e}")
-
-    # 4. Store
-    rows = [
-        {
-            "chunk_index": c.chunk_index,
-            "section": c.section,
-            "text": c.text,
-            "token_count": c.token_count,
-            "embedding": embeddings[i],
-        }
-        for i, c in enumerate(chunks)
-    ]
-    store_chunks(req.paper_id, rows)
-
-    return {
-        "paper_id": req.paper_id,
-        "already_done": False,
-        "chunk_count": len(chunks),
-        "source": source,
-    }
+        result = ingest_paper(args, cfg=cfg)
+    except IngestError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return result.to_response_dict()
 
 
 class RagAskRequest(BaseModel):
@@ -1584,162 +1198,23 @@ def api_papers_ask(req: RagAskRequest) -> dict[str, Any]:
     """Answer a question about a specific paper using RAG.
 
     Auto-ingests the paper if not yet indexed (using metadata fields).
-    Retrieves the most relevant stored chunks, then calls the LLM with them as
-    grounded context. Returns the answer and citation metadata.
+    Dispatches to the skill/fast/deliberate lane via agent.rag.agent.run_rag_ask,
+    then converges on a grounding check before returning.
     """
     if not rag_configured():
         raise HTTPException(status_code=503, detail="Vector store (Supabase) chưa được cấu hình.")
 
-    if not is_ingested(req.paper_id):
-        # Auto-ingest if metadata is available
-        if req.title or req.abstract:
-            try:
-                api_papers_ingest(IngestRequest(
-                    paper_id=req.paper_id,
-                    title=req.title or "Unknown",
-                    abstract=req.abstract,
-                    authors=req.authors,
-                    url=req.url,
-                    conference=req.conference,
-                    year=req.year,
-                    config_path=req.config_path,
-                ))
-            except HTTPException:
-                raise
-            except Exception as e:
-                raise HTTPException(status_code=503, detail=f"Auto-ingest thất bại: {e}")
-        else:
-            raise HTTPException(status_code=404, detail="Paper chưa được ingest. Hãy gọi /api/papers/ingest trước.")
-
     cfg = _cfg(req.config_path)
-    provider = cfg.llm_provider
-    embed_model = "text-embedding-3-small" if provider == "openai" else "gemini-embedding-001"
-    llm_model = cfg.openai_model if provider == "openai" else cfg.gemini_model
-    cheap_model = cfg.openai_cheap_model if provider == "openai" else cfg.gemini_cheap_model
-    base_url = cfg.openai_base_url if provider == "openai" else cfg.gemini_base_url
-
-    embed_kwargs = dict(provider=provider, embed_model=embed_model, base_url=base_url)
-
-    # ── PHASE 1: PLAN ──────────────────────────────────────────────────────────
-    # Decompose question into sub-questions + retrieval queries + target sections
-    paper_hint = f"Title: {req.title or 'Unknown'}"
-    if req.abstract:
-        paper_hint += f"\nAbstract (excerpt): {req.abstract[:500]}"
+    params = RagAskParams(
+        paper_id=req.paper_id, question=req.question,
+        history=[{"role": m.role, "content": m.content} for m in req.history],
+        title=req.title, abstract=req.abstract, authors=req.authors,
+        url=req.url, conference=req.conference, year=req.year,
+    )
     try:
-        plan = _llm_json(
-            PAPER_RAG_PLANNER,
-            f"Paper:\n{paper_hint}\n\nQuestion: {req.question}",
-            provider=provider, model=cheap_model, base_url=base_url,
-        )
-    except Exception:
-        plan = {}
-
-    sub_questions: list[str] = plan.get("sub_questions") or []
-    search_queries: list[str] = plan.get("search_queries") or []
-    sections: list[str] = plan.get("sections") or []
-    all_queries = list(dict.fromkeys([req.question] + search_queries))[:5]
-
-    # ── PHASE 2: GATHER ────────────────────────────────────────────────────────
-    # Parallel semantic search across all queries + section-targeted retrieval
-    from concurrent.futures import ThreadPoolExecutor
-
-    def _search_query(q: str) -> list[dict[str, Any]]:
-        try:
-            emb = _embed_one(q, **embed_kwargs)
-            return retrieve_chunks(req.paper_id, emb, top_k=4)
-        except Exception:
-            return []
-
-    with ThreadPoolExecutor(max_workers=min(len(all_queries), 4)) as pool:
-        gathered_batches: list[list[dict]] = list(pool.map(_search_query, all_queries))
-
-    for sec in sections[:3]:
-        gathered_batches.append(retrieve_by_section(req.paper_id, sec, top_k=3))
-
-    chunks_map: dict[int, dict[str, Any]] = {}
-    for batch in gathered_batches:
-        for c in batch:
-            chunks_map[c["chunk_index"]] = c
-
-    all_chunks = sorted(chunks_map.values(), key=lambda c: c["chunk_index"])[:14]
-    if not all_chunks:
-        raise HTTPException(status_code=404, detail="Không tìm thấy chunks liên quan.")
-
-    # ── PHASE 3: ANSWER ────────────────────────────────────────────────────────
-    # Build numbered context then call standard LLM for a grounded answer
-    context_parts = []
-    for i, ch in enumerate(all_chunks, 1):
-        section_label = ch.get("section", "body").upper()
-        context_parts.append(f"[{i}] ({section_label})\n{ch['text']}")
-    context_str = "\n\n".join(context_parts)
-
-    history_msgs = [{"role": m.role, "content": m.content} for m in req.history[-8:]]
-    history_msgs.append({
-        "role": "user",
-        "content": (
-            f"Evidence chunks:\n\n{context_str}\n\n"
-            f"---\nQuestion: {req.question}\n"
-            f"Sub-questions to address: {sub_questions or [req.question]}"
-        ),
-    })
-
-    try:
-        answer_data = _llm_json(
-            PAPER_RAG_ANSWERER, "",
-            provider=provider, model=llm_model, base_url=base_url,
-            messages=history_msgs,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Lỗi LLM (answer): {e}")
-
-    # ── PHASE 4: VERIFY ────────────────────────────────────────────────────────
-    # Cheap LLM checks groundedness, flags hallucinations, optionally refines
-    try:
-        verification = _llm_json(
-            PAPER_RAG_VERIFIER,
-            (
-                f"Original question: {req.question}\n\n"
-                f"Generated answer:\n{answer_data.get('answer', '')}\n\n"
-                f"Evidence chunks:\n{context_str}"
-            ),
-            provider=provider, model=cheap_model, base_url=base_url,
-        )
-    except Exception:
-        verification = {}
-
-    final_answer = str(verification.get("refined_answer") or answer_data.get("answer") or "").strip()
-
-    # Validate citations — keep only those referencing real chunk indices
-    chunk_index_set = {c["chunk_index"] for c in all_chunks}
-    citations = []
-    for cite in (answer_data.get("citations") or []):
-        chunk_idx = cite.get("chunk_index")
-        matched = chunks_map.get(chunk_idx) if chunk_idx is not None else None
-        citations.append({
-            "ref": cite.get("ref"),
-            "chunk_index": chunk_idx,
-            "section": cite.get("section") or (matched or {}).get("section", "body"),
-            "quote": str(cite.get("quote") or "")[:160],
-            "valid": chunk_idx in chunk_index_set,
-        })
-
-    return {
-        "answer": final_answer,
-        "citations": citations,
-        "chunks": [
-            {"chunk_index": ch["chunk_index"], "section": ch.get("section", "body"), "text": ch["text"][:500]}
-            for ch in all_chunks
-        ],
-        "confidence": answer_data.get("confidence", "medium"),
-        "coverage": answer_data.get("coverage", "partial"),
-        "plan": {
-            "sub_questions": sub_questions,
-            "queries_used": all_queries,
-            "sections_searched": sections,
-        },
-        "verification": {
-            "is_grounded": verification.get("is_grounded", True),
-            "hallucination_risk": str(verification.get("hallucination_risk") or "low"),
-            "issues": verification.get("issues") or [],
-        },
-    }
+        result = run_rag_ask(params, cfg=cfg)
+    except IngestError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    if result.refused and not result.answer and not result.chunks:
+        raise HTTPException(status_code=404, detail=result.refusal_reason or "Câu hỏi không hợp lệ.")
+    return result.to_response_dict()
