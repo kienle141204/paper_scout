@@ -60,13 +60,13 @@ PaperScout là ứng dụng web hỗ trợ tìm kiếm, đọc và phân tích b
 </td>
 <td width="50%">
 
-### 🤖 RAG Agent per-paper *(mới)*
-- Floating bubble ở góc phải, mở thành side-panel 40% màn hình
-- **4-phase reasoning**: Plan → Gather → Answer → Verify
-- Tải PDF từ arXiv/OpenReview, parse và chunk (~400 tokens, overlap 80)
+### 🤖 RAG Agent per-paper
+- 2 cách dùng: floating bubble (góc phải, mở thành side-panel 40% màn hình) hoặc **Reader Screen** *(mới)* — đọc PDF thật qua iframe + chat full-page, mở từ nút "Đọc & hỏi đáp" ở trang Detail
+- **Dispatcher 3-lane**: skill (quy trình cố định) → fast (1-lượt) → deliberate (ReAct loop multi-hop), tự escalate khi lane rẻ hơn không xử lý được
+- Tải PDF từ arXiv/OpenReview/openAccessPdf link, parse và chunk (~400 tokens, overlap 80)
 - Vector store trong Supabase (Python cosine, không cần pgvector)
 - Trả lời có **trích dẫn `[1][2]`** kèm đoạn văn gốc
-- Hiển thị độ tin cậy, độ phủ, cảnh báo hallucination
+- Hiển thị độ tin cậy, độ phủ, cảnh báo hallucination; budget governor tự giảm cấp khi vượt thời gian/token cho phép
 
 ### 🌐 Đa ngôn ngữ & Phân tích
 - Dịch abstract sang **tiếng Việt** tự động (LLM)
@@ -87,12 +87,12 @@ PaperScout là ứng dụng web hỗ trợ tìm kiếm, đọc và phân tích b
 │                        PaperScout                               │
 │                                                                 │
 │   Frontend (React + TypeScript + Vite)                         │
-│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────────┐  │
-│   │  Search  │ │  Detail  │ │  Chat    │ │  RAG Bubble     │  │
-│   │  Screen  │ │  Screen  │ │  Screen  │ │  (side panel)   │  │
-│   └────┬─────┘ └────┬─────┘ └────┬─────┘ └────────┬────────┘  │
-│        │             │             │                │            │
-│        └─────────────┴─────────────┴────────────────┘           │
+│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌───────┐ │
+│   │  Search  │ │  Detail  │ │  Reader  │ │  Chat   │ │  RAG  │ │
+│   │  Screen  │ │  Screen  │ │  Screen  │ │  Screen │ │ Bubble│ │
+│   └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬────┘ └───┬───┘ │
+│        │             │             │             │          │   │
+│        └─────────────┴─────────────┴─────────────┴──────────┘   │
 │                              │ REST API                         │
 ├──────────────────────────────┼──────────────────────────────────┤
 │   Backend (FastAPI)          │                                  │
@@ -102,11 +102,16 @@ PaperScout là ứng dụng web hỗ trợ tìm kiếm, đọc và phân tích b
 │   └──────────┬────────────────────────────────┬───────────────┘ │
 │              │                                │                  │
 │   ┌──────────▼──────────┐      ┌─────────────▼─────────────┐   │
-│   │   agent/ (Python)   │      │   RAG Pipeline             │   │
-│   │  S2 · OpenReview    │      │   pdf_fetcher → chunker    │   │
-│   │  arXiv · OpenAlex   │      │   rag_store (Supabase)     │   │
-│   │  LLM · embeddings   │      │   Plan→Gather→Answer→Verify│   │
-│   └─────────────────────┘      └────────────────────────────┘   │
+│   │  agent/search/      │      │   agent/rag/               │   │
+│   │  Search Agent        │      │   RAG Agent                │   │
+│   │  rewrite/sufficiency │      │   dispatcher 3-lane        │   │
+│   │  loop · synthesis    │      │   skill/fast/deliberate    │   │
+│   └──────────┬──────────┘      └─────────────┬─────────────┘   │
+│              │      agent/core/ (budget · governor · guardrail · trace) │
+│   ┌──────────▼──────────────────────────────────▼─────────────┐ │
+│   │  agent/tools/ — S2 · OpenReview · arXiv · OpenAlex ·       │ │
+│   │  LLM router · embeddings · pdf_fetcher · chunker · rag_store│ │
+│   └─────────────────────────────────────────────────────────────┘ │
 ├──────────────────────────────────────────────────────────────────┤
 │   Infrastructure                                                 │
 │   ┌───────────────┐  ┌─────────────────┐  ┌──────────────────┐  │
@@ -118,36 +123,32 @@ PaperScout là ứng dụng web hỗ trợ tìm kiếm, đọc và phân tích b
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 🧠 RAG Agent — 4-Phase Pipeline
+### 🧠 Two-Agent Harness
+
+PaperScout dùng **2 agent độc lập**, chỉ giao nhau ở bước ingest (xem
+[`agent/agent-harness-design.md`](agent/agent-harness-design.md) cho thiết kế đầy đủ — budget governor,
+3-tier memory, evidence safety wrapper…):
 
 ```
-Question
-   │
-   ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Phase 1 · PLAN  (cheap model)                                │
-│  Decompose → sub_questions + search_queries + sections       │
-└──────────────────────┬───────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Phase 2 · GATHER  (parallel)                                 │
-│  Embed queries in parallel → cosine search per query         │
-│  + Section-targeted retrieval → deduplicate → ≤14 chunks     │
-└──────────────────────┬───────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Phase 3 · ANSWER  (standard model)                           │
-│  Numbered context → grounded answer with [1][2] citations    │
-│  → confidence (high/medium/low) + coverage (full/partial)    │
-└──────────────────────┬───────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Phase 4 · VERIFY  (cheap model)                              │
-│  Check hallucination risk → auto-refine if medium/high       │
-└──────────────────────────────────────────────────────────────┘
+Search Agent (agent/search/)                 RAG Agent (agent/rag/)
+───────────────────────────────              ───────────────────────────────
+input guardrail (chặn injection)             input guardrail
+       │                                            │
+       ▼                                     dispatcher → chọn lane:
+search đa nguồn (S2 → fallback OpenReview)   ┌─────────┬────────┬────────────┐
+       │                                     │  skill  │  fast  │ deliberate │
+score_and_rank (embedding cosine)            │ quy trình│ 1-lượt │ ReAct loop │
+       │                                     │ cố định  │retrieve│  có budget │
+chưa đủ "tốt"? rewrite query, lặp lại        │(tóm tắt…)│+rerank │  governor  │
+  (tới max_iterations hoặc diminishing)       │ escalate │+generate│ (multi-hop)│
+       │                                     │ nếu fail │        │            │
+include_synthesis? → synthesize() có trích   └─────────┴────────┴────────────┘
+dẫn [n], strip citation giả                          │
+       │                                     check_grounded() → output guardrail
+       ▼                                     refuse nếu hallucination risk cao
+SearchRunResult                                       ▼
+                                              RagAskResult (answer + citations
+                                              + confidence + coverage)
 ```
 
 ---
@@ -308,8 +309,18 @@ CREATE TABLE IF NOT EXISTS app_users (
 | Method | Endpoint | Mô tả |
 |--------|----------|--------|
 | `POST` | `/api/chat` | Conversational search agent (stateless) |
-| `POST` | `/api/papers/ingest` | Download PDF → chunk → embed → store |
-| `POST` | `/api/papers/ask` | RAG Q&A với 4-phase reasoning |
+| `GET` | `/api/agent/status` | Kiểm tra Supabase cache + RAG vector store đã cấu hình chưa |
+| `POST` | `/api/papers/ingest` | Download PDF → chunk → embed → store (idempotent, fallback abstract) |
+| `POST` | `/api/papers/ask` | RAG Q&A — dispatcher 3-lane (skill/fast/deliberate) + grounding check |
+
+### Utilities (paper)
+
+| Method | Endpoint | Mô tả |
+|--------|----------|--------|
+| `POST` | `/api/papers/citation` | APA / BibTeX từ DOI |
+| `POST` | `/api/papers/recommend` | Paper liên quan / citing (OpenAlex) |
+| `POST` | `/api/papers/score` | Relevance score qua embedding cosine |
+| `POST` | `/api/papers/pdf/parse` | Upload PDF → parse text |
 
 ### Auth
 
@@ -334,15 +345,37 @@ CREATE TABLE IF NOT EXISTS app_users (
 
 ```
 paper_scout/
-├── 📂 agent/                    # Pure Python business logic
+├── 📂 agent/
 │   ├── config.py                # Config dataclass + load_config()
 │   ├── model.py                 # Paper dataclass
 │   ├── cli.py                   # paper-agent CLI
-│   └── tools/
+│   ├── agent-harness-design.md  # 📐 Thiết kế đầy đủ 2 agent
+│   │
+│   ├── core/                    # Dùng chung bởi cả 2 agent
+│   │   ├── budget.py / governor.py   # RunBudget + Governor (degrade khi vượt budget)
+│   │   ├── guardrail.py              # has_injection_marker() — rule-based
+│   │   ├── model_registry.py         # Map tên component → (provider, model)
+│   │   └── trace.py                  # Observability passive
+│   │
+│   ├── search/                  # 🔍 Search Agent
+│   │   ├── agent.py                  # run_search() — sufficiency/rewrite loop
+│   │   ├── tools.py                  # _call_s2, score_and_rank, OpenReview fallback
+│   │   ├── guardrails.py / synthesize.py
+│   │   └── state.py                  # SearchParams (mirror PaperSearchRequest)
+│   │
+│   ├── rag/                     # 🤖 RAG Agent
+│   │   ├── agent.py                  # run_rag_ask() — dispatch + grounding check
+│   │   ├── dispatcher.py             # classify_lane() → skill | fast | deliberate
+│   │   ├── planner.py / skills.py / memory.py
+│   │   ├── tools.py                  # retrieve, rerank, generate, check_grounded
+│   │   ├── ingest.py                 # 📄 fetch PDF → chunk → embed → store
+│   │   └── state.py                  # RagAskParams (mirror RagAskRequest)
+│   │
+│   └── tools/                   # Search-source integrations + utility chung
 │       ├── llm_text.py          # LLM router (OpenAI / Gemini)
-│       ├── prompts.py           # System prompts (chat, RAG plan/answer/verify)
-│       ├── semantic_scholar.py  # S2 search (primary)
-│       ├── paper_search.py      # Multi-source orchestrator
+│       ├── prompts.py           # System prompts
+│       ├── semantic_scholar.py  # S2 search (đường khác — dùng cho paper_search.py/OpenAlex)
+│       ├── paper_search.py      # OpenReview orchestrator
 │       ├── abstract_tools.py    # translate_abstract_vi, summarize
 │       ├── relevance.py         # Embedding cosine ranking
 │       ├── pdf_fetcher.py       # 📄 Download PDF (arXiv/OpenReview)
@@ -355,17 +388,25 @@ paper_scout/
 ├── 📂 backend/
 │   └── api.py                   # FastAPI — tất cả endpoints
 │
+├── 📂 tests/                    # pytest — mock LLM/embedding/Supabase, không cần network
+│   ├── test_agents_mock.py
+│   ├── test_backend_agent_integration.py
+│   └── test_contract_parity.py
+│
 ├── 📂 frontend/src/
-│   ├── App.tsx                  # Root — routing + shared state
+│   ├── App.tsx                  # Root — routing (History API) + shared state
 │   ├── contexts/                # AuthContext, LanguageContext
-│   ├── types/                   # paper.ts, chat.ts, rag.ts
+│   ├── types/                   # paper.ts (Paper.pdfUrl), chat.ts, rag.ts
 │   ├── services/api.ts          # API calls + mappers
+│   ├── hooks/usePaperRagChat.ts # State machine ingest/ask dùng chung
 │   ├── components/
 │   │   ├── PaperAgentBubble.tsx # 🤖 RAG floating agent
+│   │   ├── rag/MessageParts.tsx # Render message dùng chung (citation, plan, verification)
 │   │   ├── NavBar.tsx
 │   │   ├── ResultCard.tsx
 │   │   └── ...
-│   ├── screens/                 # HomeScreen, ResultsScreen, DetailScreen, ChatScreen
+│   ├── screens/                 # HomeScreen, ResultsScreen, DetailScreen,
+│   │                             # ReaderScreen (📖 đọc PDF + hỏi đáp full-page), ChatScreen
 │   └── i18n/translations.ts    # EN/VI string table
 │
 ├── supabase_migration_rag.sql   # SQL migration cho paper_chunks

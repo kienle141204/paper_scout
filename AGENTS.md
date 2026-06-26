@@ -4,8 +4,8 @@
 
 PaperScout is a Python/FastAPI backend with a React/TypeScript frontend.
 
-- `agent/` contains reusable Python business logic and the `paper-agent` CLI. Add integrations and search logic under `agent/tools/`.
-- `backend/api.py` is the FastAPI application and currently owns all HTTP endpoints.
+- `agent/` contains reusable Python business logic and the `paper-agent` CLI. It has two parts: the **two-agent harness** — `agent/core/` (shared budget/governor/guardrail/trace), `agent/search/` (Search Agent — query rewrite/sufficiency loop), `agent/rag/` (RAG Agent — skill/fast/deliberate dispatcher) — documented in detail in `agent/agent-harness-design.md`; and `agent/tools/` for search-source integrations (Semantic Scholar, arXiv, OpenAlex…) and the shared LLM/embedding router. Add new search-source integrations under `agent/tools/`; add to the harness itself under `agent/core|search|rag/`.
+- `backend/api.py` is the FastAPI application and currently owns all HTTP endpoints. It converts Pydantic request models into the harness's plain dataclasses (e.g. `SearchParams`, `RagAskParams`) before calling into `agent/` — keep `agent/` itself FastAPI-free.
 - `frontend/src/components/` contains reusable UI pieces, `frontend/src/screens/` contains page-level views, and `frontend/src/services/api.ts` centralizes API calls.
 - `frontend/src/types/` holds shared TypeScript models.
 - `docker-compose.yml` starts the application stack.
@@ -14,11 +14,11 @@ Keep backend transport code in `backend/api.py` and reusable behavior in `agent/
 
 ## Build, Test, and Development Commands
 
-Run the backend from `backend/`:
+Run the backend from the **repository root** — `agent/` is imported as `agent.*` and must be on the Python path; running `uvicorn` from inside `backend/` without installing the package first will raise `ModuleNotFoundError: agent`:
 
 ```bash
-pip install -r requirements.txt
-uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+pip install -r backend/requirements.txt
+uvicorn backend.api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Run the frontend from `frontend/`:
@@ -40,7 +40,12 @@ No formatter or linter is configured, so match surrounding code and run `npm run
 
 ## Testing Guidelines
 
-There is no committed automated test suite yet. Validate backend changes by exercising affected FastAPI endpoints or CLI commands. Validate frontend changes with `npm run build` and a local browser check. When adding tests, use descriptive names tied to behavior, such as `test_search_falls_back_to_openreview`.
+Run `pytest tests/ -v` from the repository root. The suite mocks every LLM/embedding/Supabase/cross-encoder call — no API key or network access needed:
+- `tests/test_agents_mock.py` — calls `run_search()`/`run_rag_ask()`/`ingest_paper()` directly; covers rewrite loop, dispatcher lanes, citation stripping, grounding refusal.
+- `tests/test_backend_agent_integration.py` — drives the same flows through `TestClient(app)`, exercising the Pydantic→dataclass conversion layer in `backend/api.py` that the direct-call tests skip.
+- `tests/test_contract_parity.py` — diffs fields between each Pydantic request model and its mirrored dataclass (e.g. `PaperSearchRequest` vs `SearchParams`) to catch drift when one side gains a field and the other doesn't.
+
+Use descriptive test names tied to behavior, such as `test_search_falls_back_to_openreview`. Validate frontend changes with `npm run build` and a local browser check.
 
 ## Commit & Pull Request Guidelines
 

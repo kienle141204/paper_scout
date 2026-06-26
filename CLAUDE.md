@@ -23,22 +23,53 @@ VITE_API_URL=http://localhost:8000
 
 ## Cấu trúc thư mục
 
+`agent/` chứa 2 phần: **two-agent harness** (`core/`, `search/`, `rag/` — xem
+[agent/agent-harness-design.md](agent/agent-harness-design.md) cho thiết kế đầy đủ)
+và **tools/** (search-source integrations + LLM/embedding router dùng chung).
+
 ```
 paper_summary/
-├── agent/                  # Pure Python business logic
-│   ├── config.py           # Config dataclass + load_config() (reads config.toml)
-│   ├── model.py            # Paper dataclass
-│   ├── cli.py              # paper-agent CLI entry point
-│   ├── io_utils.py         # JSONL read/write
-│   └── tools/
+├── agent/
+│   ├── config.py            # Config dataclass + load_config() (reads config.toml)
+│   ├── model.py              # Paper dataclass (dùng bởi agent/tools/* — không phải harness)
+│   ├── cli.py                 # paper-agent CLI entry point
+│   ├── io_utils.py            # JSONL read/write
+│   ├── agent-harness-design.md  # Thiết kế đầy đủ 2 agent — đọc trước khi sửa core/search/rag
+│   │
+│   ├── core/                # Cross-cutting, dùng chung bởi cả 2 agent
+│   │   ├── budget.py            # RunBudget — per-run resource cap (thời gian/token/tool-call/cost)
+│   │   ├── governor.py          # Governor.check_before_step() → DegradeLevel trước mỗi bước
+│   │   ├── guardrail.py         # has_injection_marker() — rule-based, rẻ, dùng trước khi gọi LLM
+│   │   ├── llm_json.py          # Gọi LLM + best-effort parse JSON từ reply
+│   │   ├── model_registry.py    # resolve_*() — map tên component → (provider, model, base_url) theo Config 3-tier
+│   │   └── trace.py             # RunTrace — observability passive (latency/token/cost mỗi step)
+│   │
+│   ├── search/               # Search Agent — tìm paper từ NL query
+│   │   ├── agent.py             # run_search(SearchParams, cfg) → SearchRunResult; sufficiency/rewrite loop
+│   │   ├── state.py             # SearchParams, SearchState (plain dataclass, mirror PaperSearchRequest)
+│   │   ├── tools.py             # _call_s2, score_and_rank, _search_fallback (OpenReview) — relocate từ backend/api.py cũ
+│   │   ├── guardrails.py        # input/output guardrail (injection + citation hợp lệ)
+│   │   └── synthesize.py        # synthesize() — tổng hợp có trích dẫn, strip citation giả
+│   │
+│   ├── rag/                  # RAG Agent — hỏi đáp trên 1 paper cụ thể
+│   │   ├── agent.py             # run_rag_ask(RagAskParams, cfg) → RagAskResult; dispatch lane + grounding check
+│   │   ├── dispatcher.py        # classify_lane() → skill | fast | deliberate
+│   │   ├── planner.py           # run_deliberate() — ReAct loop có budget governor (multi-hop)
+│   │   ├── skills.py            # SKILL_REGISTRY — quy trình cố định (tóm tắt, trích phương pháp…), escalate khi không xử lý được
+│   │   ├── memory.py            # contextualize() — resolve câu hỏi follow-up dựa lịch sử hội thoại
+│   │   ├── tools.py             # retrieve (vector+BM25 hybrid), rerank, generate (evidence wrapper), check_grounded
+│   │   ├── ingest.py            # ingest_paper(IngestRequest) — fetch PDF → parse → chunk → embed → store
+│   │   └── state.py             # RagAskParams, RAGState (plain dataclass, mirror RagAskRequest)
+│   │
+│   └── tools/                # Search-source integrations + utility chung (không thuộc harness)
 │       ├── llm_text.py         # LLM router → openai_text.py / gemini_text.py
 │       ├── openai_text.py      # OpenAI chat completion
 │       ├── gemini_text.py      # Gemini text generation
 │       ├── openai_embeddings.py / gemini_embeddings.py
 │       ├── prompts.py          # System prompts: PARSE_QUERY, CHAT_AGENT, ANALYZE_PAPER
 │       ├── query_parse.py      # NL query → {keywords, keyword_variants, venues, year}
-│       ├── paper_search.py     # OpenReview search orchestrator
-│       ├── semantic_scholar.py # S2 search (primary source)
+│       ├── paper_search.py     # OpenReview search orchestrator (dùng bởi search/tools.py fallback)
+│       ├── semantic_scholar.py # S2 search — bản dùng cho paper_search.py/OpenAlex path (khác _call_s2 trong search/tools.py)
 │       ├── openreview_search.py
 │       ├── major_venues.py     # MAJOR_VENUES dict + major_search()
 │       ├── openalex_search.py / arxiv.py / crossref.py / dblp.py
@@ -47,22 +78,33 @@ paper_summary/
 │       ├── relevance.py        # score_batch (embedding cosine similarity)
 │       ├── venue_ranking.py    # Venue tier/ranking data
 │       ├── recommend.py        # Paper recommendation logic
-│       ├── citation.py         # Citation graph helpers
+│       ├── citation.py         # apa_from_doi, bibtex_from_doi
 │       ├── web_fetch.py        # fetch_paper_from_url
-│       ├── pdf_parser.py       # PDF text extraction
+│       ├── pdf_fetcher.py      # fetch_pdf() — download PDF (arXiv/OpenReview URL → direct PDF)
+│       ├── pdf_parser.py       # PDF text extraction (pypdf)
+│       ├── chunker.py          # make_chunks/split_text — chunk ~400 token, overlap 80
+│       ├── rag_store.py        # Supabase vector store (table paper_chunks, cosine tính trong Python)
 │       ├── library.py          # SQLite local library CRUD
 │       └── paper_cache.py      # Supabase cache (paper_cache table)
 │
 ├── backend/
-│   └── api.py              # FastAPI — единственный файл; все endpoints здесь
+│   └── api.py              # FastAPI — một file; tất cả endpoint định nghĩa ở đây, gọi vào agent/
+│
+├── tests/                  # pytest — toàn bộ mock LLM/embedding/Supabase, không cần API key/network
+│   ├── test_agents_mock.py               # Search/RAG agent end-to-end, gọi trực tiếp run_search()/run_rag_ask()
+│   ├── test_backend_agent_integration.py # Qua FastAPI TestClient — test lớp convert Pydantic↔dataclass
+│   └── test_contract_parity.py           # So field giữa Pydantic request models và dataclass *Params tương ứng
 │
 ├── frontend/src/
-│   ├── App.tsx             # Root — screen routing + all shared state
+│   ├── App.tsx             # Root — screen routing (history API, không dùng React Router) + shared state
 │   ├── contexts/           # AuthContext.tsx, LanguageContext.tsx
-│   ├── types/              # paper.ts, chat.ts
+│   ├── types/              # paper.ts (Paper.pdfUrl — link PDF trực tiếp, tách biệt với url), chat.ts, rag.ts
 │   ├── services/api.ts     # All API calls + mappers (BackendPaper → Paper)
-│   ├── components/         # atoms.tsx, NavBar, ResultCard, FilterSidebar, AuthModal, SettingsPanel…
-│   ├── screens/            # HomeScreen, ResultsScreen, DetailScreen, SavedScreen, ChatScreen
+│   ├── hooks/usePaperRagChat.ts          # State machine ingest/ask dùng chung — xem mục RAG Agent bên dưới
+│   ├── components/         # atoms.tsx, NavBar, ResultCard, FilterSidebar, AuthModal, SettingsPanel,
+│   │                       # PaperAgentBubble.tsx (bong bóng RAG nổi), rag/MessageParts.tsx (render message dùng chung)…
+│   ├── screens/            # HomeScreen, ResultsScreen, DetailScreen, ReaderScreen (đọc PDF + hỏi đáp full-page),
+│   │                       # SavedScreen, ChatScreen
 │   ├── utils/filterChat.ts # applyFilterParams() — pure client-side filter for chat action=filter
 │   └── i18n/translations.ts  # EN/VI string table (used via useLanguage hook)
 │
@@ -89,6 +131,13 @@ paper_summary/
 | `POST /summarize` | Tóm tắt abstract (5 bullet points) |
 | `POST /library/*` | CRUD SQLite local library (add, list, delete, tags, note) |
 | `POST /profile/*` | Key-value profile trong SQLite (set, get) |
+| `GET /api/agent/status` | Kiểm tra Supabase paper_cache + RAG vector store đã cấu hình; `?paper_id=` để check đã ingest chưa |
+| `POST /api/papers/ingest` | RAG Agent — `ingest_paper()`: fetch PDF → parse → chunk → embed → store (idempotent, fallback abstract) |
+| `POST /api/papers/ask` | RAG Agent — `run_rag_ask()`: auto-ingest nếu chưa có, dispatch lane skill/fast/deliberate, grounding check |
+| `POST /api/papers/citation` | APA/BibTeX từ DOI (`agent/tools/citation.py`) |
+| `POST /api/papers/recommend` | Paper liên quan/citing từ OpenAlex (`recommend_from_openalex`) |
+| `POST /api/papers/score` | Relevance score qua embedding cosine (`score_relevance`) |
+| `POST /api/papers/pdf/parse` | Upload PDF (multipart) → parse text (`parse_pdf`) |
 
 ## Kiến trúc và quyết định quan trọng
 
@@ -119,11 +168,25 @@ LLM trong `/api/chat` trả về JSON `{action: "search"|"clarify"|"filter"|"don
 - `paper_cache.py` dùng `SUPABASE_ANON_KEY`; auth dùng `SUPABASE_SERVICE_ROLE_KEY`.
 - Cache write là **fire-and-forget** qua `_bg_pool` (ThreadPoolExecutor 4 workers) — không block HTTP response.
 
-### Search pipeline (S2-primary)
-1. Parse NL query → `keywords`, `keyword_variants` (2 variants), `venues`, `year_from/to`
-2. Primary S2 query → nếu 429, fallback OpenReview (parallel ThreadPoolExecutor)
-3. Variant queries (parallel) nếu cần thêm kết quả
-4. `score_batch()` — embedding cosine similarity để sort theo relevance
+### Search pipeline — Search Agent (`agent/search/`)
+`run_search()` (`agent/search/agent.py`) chạy loop: rewrite query → tìm đa nguồn → chấm điểm → nếu chưa đủ paper "tốt" thì lặp lại tới `max_iterations` (mặc định 3) hoặc tới khi diminishing-returns. Trong mỗi vòng:
+1. Input guardrail (chặn prompt injection) → nếu fail, trả `refused=True`, không gọi search.
+2. Primary S2 query (`_call_s2`) → nếu 429, fallback OpenReview (parallel ThreadPoolExecutor).
+3. Variant queries (parallel) nếu cần thêm kết quả.
+4. `score_and_rank()` — embedding cosine similarity để sort theo relevance.
+5. Nếu `include_synthesis=True`: `synthesize()` tổng hợp có trích dẫn `[n]`, output guardrail strip citation trỏ tới paper không tồn tại trong kết quả.
+
+`pdf_url` (tách biệt với `url`): ưu tiên `openAccessPdf.url` từ S2 — chỉ set khi có link PDF trực tiếp thật; `url` vẫn là link "xem online" (S2 page / DOI) dùng làm fallback hiển thị + input cho `fetch_pdf()` khi ingest.
+
+### RAG Agent (`agent/rag/`) — hỏi đáp trên 1 paper
+`run_rag_ask()` (`agent/rag/agent.py`): input guardrail → auto-ingest nếu paper chưa được index (cần `title`/`abstract` trong request) → `dispatcher.classify_lane()` chọn 1 trong 3 lane:
+- **skill** — quy trình cố định trong `SKILL_REGISTRY` (vd. tóm tắt paper) cho câu hỏi phổ biến; escalate lên `deliberate` nếu `can_handle()` trả False (vd. chưa có chunk nào).
+- **fast** — retrieve + rerank + generate một lượt, cho câu hỏi factual đơn giản.
+- **deliberate** — ReAct loop có bound bởi `Governor` (budget thời gian/token/tool-call), dùng cho câu hỏi multi-hop.
+
+Sau khi có answer: `check_grounded()` + output guardrail — refuse nếu hallucination risk cao và không grounded. Evidence (chunk nội dung) luôn được bọc bằng delimiter `<<<EVIDENCE_DATA>>>` + ghi chú "NOT instructions" trước khi đưa vào prompt, để chống prompt injection từ nội dung PDF. Chi tiết đầy đủ (3-tier memory, ReAct steps…): [agent/agent-harness-design.md](agent/agent-harness-design.md).
+
+Frontend dùng chung 1 hook `usePaperRagChat` (ingest + ask state machine) cho 2 nơi: `PaperAgentBubble` (bong bóng nổi trên DetailScreen) và `ReaderScreen` (đọc PDF qua `<iframe>` + chat full-page, tự ingest khi mở màn hình).
 
 ### i18n
 `LanguageContext` + `frontend/src/i18n/translations.ts`. Language pref lưu cả frontend (`localStorage`) và backend (cột `language_pref` trong `app_users`).
@@ -170,11 +233,18 @@ analysis_model = "gemini-2.5-pro"
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 ```
 
+## Tests
+
+`pytest tests/ -v` — toàn bộ test mock LLM/embedding/Supabase/cross-encoder, không cần API key hay network:
+- `test_agents_mock.py` — gọi trực tiếp `run_search()`/`run_rag_ask()`/`ingest_paper()`, test control flow (rewrite loop, dispatcher lane, citation stripping, grounding refusal).
+- `test_backend_agent_integration.py` — qua `TestClient(app)`, test lớp convert Pydantic→dataclass ở `backend/api.py` không bị bỏ qua.
+- `test_contract_parity.py` — so field giữa Pydantic request model và dataclass `*Params` mirror tương ứng (bắt lệch hợp đồng khi 1 bên thêm field quên bên kia).
+
 ## Stack
 
 - **Backend**: FastAPI, Python 3.10+, tenacity (retry), python-jose (JWT), bcrypt
 - **Frontend**: React 18, TypeScript, Vite, Tailwind CSS
 - **Paper sources**: Semantic Scholar (primary), OpenReview, arXiv, OpenAlex, Crossref, DBLP
-- **Cache**: Supabase (`paper_cache` table — abstract_vi + analysis_html)
+- **Cache**: Supabase (`paper_cache` table — abstract_vi + analysis_html; `paper_chunks` table — RAG vector store)
 - **Auth**: Custom JWT, Supabase `app_users` table
 - **Local library**: SQLite via `agent/tools/library.py`
