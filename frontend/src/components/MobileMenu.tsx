@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { Icon } from './atoms'
 import type { Screen } from '../types/paper'
 import { useLanguage } from '../contexts/LanguageContext'
-import { useAuth } from '../contexts/AuthContext'
 
 interface Props {
   open: boolean
@@ -13,12 +12,10 @@ interface Props {
   onSaved: () => void
   onChat: () => void
   onSettings: () => void
-  onLogin: () => void
 }
 
-export default function MobileMenu({ open, onClose, screen, savedCount, onHome, onSaved, onChat, onSettings, onLogin }: Props) {
+export default function MobileMenu({ open, onClose, screen, savedCount, onHome, onSaved, onChat, onSettings }: Props) {
   const { t } = useLanguage()
-  const { isLoggedIn, user } = useAuth()
   const nt = t.nav
 
   useEffect(() => {
@@ -102,34 +99,6 @@ export default function MobileMenu({ open, onClose, screen, savedCount, onHome, 
           >
             <Icon name="settings" size={17} /> {nt.settings}
           </button>
-
-          {isLoggedIn && user ? (
-            <button
-              onClick={onSettings}
-              className="btn btn-ghost btn-block"
-              style={{ justifyContent: 'flex-start', height: 52, fontSize: 15 }}
-            >
-              <div style={{
-                width: 22, height: 22, borderRadius: '50%',
-                background: 'var(--ink)', color: 'var(--bg)',
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 11, fontWeight: 700, flexShrink: 0,
-              }}>
-                {(user.display_name ?? user.email)[0].toUpperCase()}
-              </div>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {user.display_name ?? user.email}
-              </span>
-            </button>
-          ) : (
-            <button
-              onClick={onLogin}
-              className="btn btn-ghost btn-block"
-              style={{ justifyContent: 'flex-start', height: 52, fontSize: 15 }}
-            >
-              <Icon name="user" size={17} /> {nt.login}
-            </button>
-          )}
         </div>
       </nav>
     </>

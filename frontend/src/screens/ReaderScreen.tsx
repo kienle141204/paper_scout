@@ -5,7 +5,6 @@ import { usePaperRagChat } from '../hooks/usePaperRagChat'
 import { ReasoningBlock, VerificationBadge, AnswerMeta, MessageContent } from '../components/rag/MessageParts'
 import type { Paper } from '../types/paper'
 import { useLanguage } from '../contexts/LanguageContext'
-import { useAuth } from '../contexts/AuthContext'
 import { pdfProxyUrl } from '../services/api'
 
 interface Props {
@@ -13,7 +12,6 @@ interface Props {
   saved: boolean
   onToggleSave: () => void
   onBack: () => void
-  onNeedAuth: () => void
 }
 
 const SUGGESTED = [
@@ -23,12 +21,10 @@ const SUGGESTED = [
   'Hạn chế và hướng phát triển?',
 ]
 
-export default function ReaderScreen({ paper, saved, onToggleSave, onBack, onNeedAuth }: Props) {
+export default function ReaderScreen({ paper, saved, onToggleSave, onBack }: Props) {
   const { t } = useLanguage()
-  const { isLoggedIn } = useAuth()
   const dr = t.reader
   const handleToggleSave = () => {
-    if (!isLoggedIn) { onNeedAuth(); return }
     onToggleSave()
   }
   const {

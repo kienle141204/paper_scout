@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import NavBar from './components/NavBar'
 import AdvancedFilters from './components/AdvancedFilters'
-import AuthModal from './components/AuthModal'
 import SettingsPanel from './components/SettingsPanel'
 import HomeScreen from './screens/HomeScreen'
 import ResultsScreen from './screens/ResultsScreen'
@@ -14,7 +13,6 @@ import { DEFAULT_FILTERS } from './types/paper'
 import { getConferences, searchPapers, parseQuery } from './services/api'
 import type { SearchParams } from './services/api'
 import { LanguageProvider } from './contexts/LanguageContext'
-import { AuthProvider, useAuth } from './contexts/AuthContext'
 
 function screenToUrl(screen: Screen, selectedId: string | null, query: string): string {
   if (screen === 'detail' && selectedId) return `/detail/${encodeURIComponent(selectedId)}`
@@ -44,7 +42,6 @@ function parseInitialUrl(): { screen: Screen; selectedId: string | null } {
 const _INIT = parseInitialUrl()
 
 function AppInner() {
-  const { isLoggedIn } = useAuth()
   const [screen, setScreen] = useState<Screen>(_INIT.screen)
   const [prevScreen, setPrevScreen] = useState<Screen>('results')
   const [query, setQuery] = useState('')
@@ -54,7 +51,6 @@ function AppInner() {
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
   const [sort, setSort] = useState<SortKey>('relevance')
   const [savedMap, setSavedMap] = useState<Record<string, Paper>>(() => {
-    if (!localStorage.getItem('ps_token')) return {}
     try { return JSON.parse(localStorage.getItem('ps_saved_papers') ?? '{}') } catch { return {} }
   })
   const savedIds = useMemo(() => Object.keys(savedMap), [savedMap])
@@ -67,15 +63,7 @@ function AppInner() {
   const [hasMore, setHasMore] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const [correctedQuery, setCorrectedQuery] = useState<string | null>(null)
-  const [authModalOpen, setAuthModalOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-
-  // When user logs out, clear savedMap
-  useEffect(() => {
-    if (!isLoggedIn) {
-      setSavedMap({})
-    }
-  }, [isLoggedIn])
 
   // ── URL / History routing ────────────────────────────────────────────────
   const isPopping = useRef(false)
@@ -193,10 +181,6 @@ function AppInner() {
   }, [lastSearchParams, currentPage, goToPage])
 
   const toggleSave = useCallback((id: string) => {
-    if (!isLoggedIn) {
-      setAuthModalOpen(true)
-      return
-    }
     setSavedMap((prev) => {
       let next: Record<string, Paper>
       if (id in prev) {
@@ -210,7 +194,7 @@ function AppInner() {
       localStorage.setItem('ps_saved_papers', JSON.stringify(next))
       return next
     })
-  }, [papers, chatPapersMap, isLoggedIn])
+  }, [papers, chatPapersMap])
 
   const openPaper = useCallback((id: string) => {
     setPrevScreen(screen)
@@ -272,7 +256,6 @@ function AppInner() {
         onChat={() => setScreen('chat')}
         onSearch={(q) => handleSearch({ query: q, confs: filters.confs, yearFrom: filters.years[0], yearTo: filters.years[1] })}
         onSettings={() => setSettingsOpen(true)}
-        onLogin={() => setAuthModalOpen(true)}
       />
 
       {screen === 'home' && (
@@ -314,7 +297,6 @@ function AppInner() {
           onBack={handleBack}
           onOpen={openPaper}
           onOpenReader={openReader}
-          onNeedAuth={() => setAuthModalOpen(true)}
         />
       )}
 
@@ -324,7 +306,6 @@ function AppInner() {
           saved={savedIds.includes(selected.id)}
           onToggleSave={() => toggleSave(selected.id)}
           onBack={handleBack}
-          onNeedAuth={() => setAuthModalOpen(true)}
         />
       )}
 
@@ -334,7 +315,6 @@ function AppInner() {
           onOpen={openPaper}
           onToggleSave={toggleSave}
           onGoSearch={() => setScreen('home')}
-          onOpenAuth={() => setAuthModalOpen(true)}
         />
       )}
 
@@ -357,14 +337,9 @@ function AppInner() {
         />
       )}
 
-      {authModalOpen && (
-        <AuthModal onClose={() => setAuthModalOpen(false)} />
-      )}
-
       {settingsOpen && (
         <SettingsPanel
           onClose={() => setSettingsOpen(false)}
-          onOpenAuth={() => setAuthModalOpen(true)}
         />
       )}
 
@@ -394,9 +369,7 @@ function AppInner() {
 export default function App() {
   return (
     <LanguageProvider>
-      <AuthProvider>
-        <AppInner />
-      </AuthProvider>
+      <AppInner />
     </LanguageProvider>
   )
 }

@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -12,43 +11,9 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
-import bcrypt as _bcrypt_lib
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from jose import JWTError, jwt as _jwt
 from pydantic import BaseModel, Field
-
-# ── JWT / Auth helpers ────────────────────────────────────────────────────────
-
-_JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-in-prod")
-_JWT_ALGORITHM = "HS256"
-_JWT_EXPIRE_DAYS = 30
-
-
-def _hash_password(plain: str) -> str:
-    return _bcrypt_lib.hashpw(plain.encode("utf-8"), _bcrypt_lib.gensalt()).decode("utf-8")
-
-
-def _verify_password(plain: str, hashed: str) -> bool:
-    return _bcrypt_lib.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-
-
-def _create_token(user_id: str, email: str) -> str:
-    exp = datetime.now(timezone.utc) + timedelta(days=_JWT_EXPIRE_DAYS)
-    return _jwt.encode({"sub": user_id, "email": email, "exp": exp}, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
-
-
-def _decode_token(token: str) -> dict:
-    return _jwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
-
-
-def _get_current_user(authorization: str = Header(...)) -> dict:
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid token")
-    try:
-        return _decode_token(authorization[7:])
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 from agent.config import DEFAULT_CONFIG_PATH, load_config
 from agent.tools.abstract_tools import summarize_abstract, translate_abstract_vi
@@ -103,8 +68,8 @@ _bg_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bg_")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -118,159 +83,6 @@ def root() -> dict[str, str]:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-# ── Supabase client for auth (separate from paper_cache singleton) ─────────────
-
-def _supabase_client():
-    """Return a Supabase client for auth operations using service role key (bypasses RLS).
-    Falls back to anon key if service role key is not set — in that case run:
-      ALTER TABLE app_users DISABLE ROW LEVEL SECURITY;
-    in the Supabase SQL editor.
-    """
-    url = os.environ.get("SUPABASE_URL")
-    # Service role key bypasses RLS — required for server-side auth operations
-    key = (
-        os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-        or os.environ.get("SUPABASE_ANON_KEY")
-        or os.environ.get("SUPABASE_KEY")
-    )
-    if not url or not key:
-        return None
-    try:
-        from supabase import create_client
-        return create_client(url, key)
-    except Exception:
-        return None
-
-
-# ── Auth Pydantic models ──────────────────────────────────────────────────────
-
-class RegisterRequest(BaseModel):
-    email: str
-    password: str
-    display_name: str | None = None
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class UpdateMeRequest(BaseModel):
-    language_pref: Literal['en', 'vi'] | None = None
-    display_name: str | None = None
-
-
-# ── Auth endpoints ────────────────────────────────────────────────────────────
-
-@app.post("/auth/register")
-def auth_register(req: RegisterRequest) -> dict:
-    if '@' not in req.email or len(req.email) < 5:
-        raise HTTPException(400, "Invalid email")
-    if len(req.password) < 8:
-        raise HTTPException(400, "Password too short")
-
-    client = _supabase_client()
-    if not client:
-        raise HTTPException(503, "Database not configured")
-
-    existing = client.table("app_users").select("id").eq("email", req.email.lower()).execute()
-    if existing.data:
-        raise HTTPException(409, "Email already registered")
-
-    hashed = _hash_password(req.password)
-    result = client.table("app_users").insert({
-        "email": req.email.lower(),
-        "password_hash": hashed,
-        "display_name": req.display_name,
-        "language_pref": "en",
-    }).execute()
-
-    user = result.data[0]
-    token = _create_token(user["id"], user["email"])
-    return {
-        "token": token,
-        "user": {
-            "id": user["id"],
-            "email": user["email"],
-            "display_name": user.get("display_name"),
-            "language_pref": user.get("language_pref", "en"),
-        }
-    }
-
-
-@app.post("/auth/login")
-def auth_login(req: LoginRequest) -> dict:
-    client = _supabase_client()
-    if not client:
-        raise HTTPException(503, "Database not configured")
-
-    result = client.table("app_users").select("*").eq("email", req.email.lower()).execute()
-    if not result.data:
-        raise HTTPException(401, "Invalid credentials")
-
-    user = result.data[0]
-    if not _verify_password(req.password, user["password_hash"]):
-        raise HTTPException(401, "Invalid credentials")
-
-    token = _create_token(user["id"], user["email"])
-    return {
-        "token": token,
-        "user": {
-            "id": user["id"],
-            "email": user["email"],
-            "display_name": user.get("display_name"),
-            "language_pref": user.get("language_pref", "en"),
-        }
-    }
-
-
-@app.get("/auth/me")
-def auth_me(current_user: dict = Depends(_get_current_user)) -> dict:
-    client = _supabase_client()
-    if not client:
-        raise HTTPException(503, "Database not configured")
-
-    result = client.table("app_users").select("id,email,display_name,language_pref").eq("id", current_user["sub"]).execute()
-    if not result.data:
-        raise HTTPException(404, "User not found")
-
-    user = result.data[0]
-    return {
-        "id": user["id"],
-        "email": user["email"],
-        "display_name": user.get("display_name"),
-        "language_pref": user.get("language_pref", "en"),
-    }
-
-
-@app.patch("/auth/me")
-def auth_update_me(req: UpdateMeRequest, current_user: dict = Depends(_get_current_user)) -> dict:
-    client = _supabase_client()
-    if not client:
-        raise HTTPException(503, "Database not configured")
-
-    updates: dict = {}
-    if req.language_pref is not None:
-        updates["language_pref"] = req.language_pref
-    if req.display_name is not None:
-        updates["display_name"] = req.display_name
-
-    if not updates:
-        raise HTTPException(400, "No fields to update")
-
-    result = client.table("app_users").update(updates).eq("id", current_user["sub"]).execute()
-    if not result.data:
-        raise HTTPException(404, "User not found")
-
-    user = result.data[0]
-    return {
-        "id": user["id"],
-        "email": user["email"],
-        "display_name": user.get("display_name"),
-        "language_pref": user.get("language_pref", "en"),
-    }
 
 
 @lru_cache(maxsize=8)

@@ -4,9 +4,9 @@
 
 # 🔬 PaperScout
 
-**AI-powered academic paper discovery with a built-in RAG reasoning agent**
+**Trợ lý research cá nhân chạy local — với RAG reasoning agent tích hợp**
 
-Tìm kiếm đa nguồn · Dịch tiếng Việt · Chat AI · RAG Agent per-paper · Xác thực người dùng
+Tìm kiếm đa nguồn · Dịch tiếng Việt · Chat AI · RAG Agent per-paper · Chạy 1 lệnh, không cần deploy
 
 ---
 
@@ -16,8 +16,7 @@ Tìm kiếm đa nguồn · Dịch tiếng Việt · Chat AI · RAG Agent per-pap
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-5-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-3-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
-[![Supabase](https://img.shields.io/badge/Supabase-Cache%20%26%20Auth-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com/)
-[![Railway](https://img.shields.io/badge/Deploy-Railway-0B0D0E?style=flat-square&logo=railway&logoColor=white)](https://railway.app/)
+[![Supabase](https://img.shields.io/badge/Supabase-Shared%20Paper%20DB-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com/)
 
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4.1-412991?style=flat-square&logo=openai&logoColor=white)](https://openai.com/)
 [![Google Gemini](https://img.shields.io/badge/Google-Gemini%202.5-4285F4?style=flat-square&logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
@@ -31,7 +30,9 @@ Tìm kiếm đa nguồn · Dịch tiếng Việt · Chat AI · RAG Agent per-pap
 
 ## 📸 Tổng quan
 
-PaperScout là ứng dụng web hỗ trợ tìm kiếm, đọc và phân tích bài báo khoa học bằng AI. Điểm nổi bật là **RAG Agent per-paper** — mỗi bài báo có một AI riêng đọc toàn bộ PDF và trả lời câu hỏi với trích dẫn chính xác đến từng đoạn.
+PaperScout là **trợ lý research cá nhân chạy trên máy của bạn** — clone repo, thêm API key LLM, chạy một lệnh là có ngay app tìm kiếm/đọc/phân tích paper bằng AI. Không cần đăng nhập, không cần deploy. Điểm nổi bật là **RAG Agent per-paper** — mỗi bài báo có một AI riêng đọc toàn bộ PDF và trả lời câu hỏi với trích dẫn chính xác đến từng đoạn.
+
+Dữ liệu **cá nhân** (paper đã lưu, lịch sử, ngôn ngữ) nằm ngay trên máy (trình duyệt / SQLite local). Dữ liệu **paper dùng chung** (bản dịch, RAG chunks) nằm trên một Supabase chung đã được cấu hình sẵn — bạn không phải set up gì.
 
 ```
 📄 Tìm paper → 🧠 AI phân tích → 💬 Hỏi đáp với RAG Agent → 🌐 Dịch tiếng Việt
@@ -115,10 +116,9 @@ PaperScout là ứng dụng web hỗ trợ tìm kiếm, đọc và phân tích b
 ├──────────────────────────────────────────────────────────────────┤
 │   Infrastructure                                                 │
 │   ┌───────────────┐  ┌─────────────────┐  ┌──────────────────┐  │
-│   │   Supabase    │  │  OpenAI/Gemini  │  │     Railway      │  │
-│   │  paper_cache  │  │  LLM · Embed    │  │    Hosting       │  │
-│   │  paper_chunks │  │                 │  │                  │  │
-│   │  app_users    │  │                 │  │                  │  │
+│   │ Supabase CHUNG│  │  OpenAI/Gemini  │  │  Local (trên máy)│  │
+│   │  paper_cache  │  │  LLM · Embed    │  │  localStorage    │  │
+│   │  paper_chunks │  │                 │  │  library.sqlite3 │  │
 │   └───────────────┘  └─────────────────┘  └──────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -155,6 +155,8 @@ SearchRunResult                                       ▼
 
 ## 🚀 Quick Start
 
+Chạy local trong **3 bước**. Không cần đăng nhập, không cần deploy, không cần tự dựng database.
+
 ### Yêu cầu
 
 | Tool | Version |
@@ -163,101 +165,70 @@ SearchRunResult                                       ▼
 | Node.js | 18+ |
 | npm | 9+ |
 
-### 1. Clone & cài đặt
+### 1. Clone
 
 ```bash
 git clone https://github.com/kienle141204/paper_scout.git
 cd paper_scout
 ```
 
-### 2. Backend
+### 2. Thêm API key
+
+Tạo `backend/.env` (hoặc để `run.py` tự tạo từ mẫu ở lần chạy đầu) và điền **một** key LLM:
 
 ```bash
-# Tạo virtual environment
-python -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
-
-# Cài dependencies
-pip install -r backend/requirements.txt
-
-# Cấu hình
-cp backend/.env.example backend/.env   # điền API keys
+cp backend/.env.example backend/.env
+# rồi mở backend/.env, đặt OPENAI_API_KEY=sk-...   (hoặc GEMINI_API_KEY=...)
 ```
 
-Tạo `config.toml` ở root:
+> DB paper dùng chung (Supabase) đã được nhúng sẵn — bạn **không cần** cấu hình gì thêm.
+
+### 3. Chạy một lệnh
+
+```bash
+python run.py
+```
+
+Lệnh này tự lo phần còn lại: cài dependency Python (`pip install -e .`) và frontend
+(`npm install`) ở lần đầu, rồi khởi động **cả backend lẫn frontend** song song.
+
+Mở trình duyệt tại **`http://localhost:5173`** · Backend chạy ở `http://localhost:8000`.
+Nhấn `Ctrl+C` để dừng cả hai.
+
+<details>
+<summary>Tùy chọn: đổi provider/model qua <code>config.toml</code></summary>
+
+Tạo `config.toml` ở root (mặc định dùng OpenAI nếu bỏ qua):
 
 ```toml
 [llm]
 provider = "openai"   # hoặc "gemini"
 
 [openai]
-model        = "gpt-4.1-mini"
-cheap_model  = "gpt-4.1-nano"
+model          = "gpt-4.1-mini"
+cheap_model    = "gpt-4.1-nano"
 analysis_model = "gpt-4.1"
 
-# Hoặc dùng Gemini:
-# [llm]
-# provider = "gemini"
 # [gemini]
 # model          = "gemini-2.5-flash"
 # cheap_model    = "gemini-2.0-flash-lite"
 # analysis_model = "gemini-2.5-pro"
 ```
 
-```bash
-# Chạy backend
-uvicorn backend.api:app --host 0.0.0.0 --port 8000 --reload
-```
+</details>
 
-### 3. Frontend
+<details>
+<summary>Tùy chọn: dùng Supabase RIÊNG của bạn thay vì DB chung</summary>
 
-```bash
-cd frontend
-cp .env.example .env              # VITE_API_URL=http://localhost:8000
-npm install
-npm run dev
-```
+Đặt `SUPABASE_URL` + `SUPABASE_ANON_KEY` trong `backend/.env` để ghi đè DB chung, rồi chạy
+[`supabase_migration_rag.sql`](supabase_migration_rag.sql) trong Supabase SQL Editor để tạo bảng
+`paper_cache` + `paper_chunks`.
 
-Frontend: `http://localhost:5173` · Backend: `http://localhost:8000`
+> ⚠️ **Lưu ý DB chung**: các bảng đang tắt Row-Level Security, nên bất kỳ ai có anon key (được
+> ship trong repo) cũng có thể ghi vào DB chung. Nếu lo bị lạm dụng, hãy bật RLS + policy
+> read-mostly trên Supabase, hoặc dùng Supabase riêng.
 
-### 4. Supabase (tùy chọn — cần cho cache và RAG)
-
-Vào **Supabase Dashboard → SQL Editor** và chạy:
-
-```sql
--- Bảng cache abstract + analysis
-CREATE TABLE IF NOT EXISTS paper_cache (
-  paper_id      TEXT PRIMARY KEY,
-  abstract_vi   TEXT,
-  analysis_html TEXT,
-  created_at    TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Bảng RAG chunks (vector store)
-CREATE TABLE IF NOT EXISTS paper_chunks (
-  id          BIGSERIAL PRIMARY KEY,
-  paper_id    TEXT NOT NULL,
-  chunk_index INT  NOT NULL,
-  section     TEXT,
-  text        TEXT NOT NULL,
-  embedding   TEXT NOT NULL,
-  token_count INT,
-  created_at  TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE (paper_id, chunk_index)
-);
-CREATE INDEX IF NOT EXISTS paper_chunks_paper_id_idx ON paper_chunks (paper_id);
-ALTER TABLE paper_chunks DISABLE ROW LEVEL SECURITY;
-
--- Bảng user (auth)
-CREATE TABLE IF NOT EXISTS app_users (
-  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  email         TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
-  display_name  TEXT,
-  language_pref TEXT DEFAULT 'vi',
-  created_at    TIMESTAMPTZ DEFAULT NOW()
-);
-```
+</details>
 
 ---
 
@@ -270,16 +241,14 @@ CREATE TABLE IF NOT EXISTS app_users (
 | `OPENAI_API_KEY` | Nếu dùng OpenAI | LLM + embeddings |
 | `GEMINI_API_KEY` | Nếu dùng Gemini | Thay thế OpenAI |
 | `SEMANTIC_SCHOLAR_API_KEY` | Không | Tăng rate limit S2 |
-| `SUPABASE_URL` | Cho cache/RAG/auth | URL project Supabase |
-| `SUPABASE_ANON_KEY` | Cho cache & RAG | Anon key (paper_cache, paper_chunks) |
-| `SUPABASE_SERVICE_ROLE_KEY` | Cho auth | Service role key (bypass RLS cho app_users) |
-| `JWT_SECRET` | Không | JWT signing secret (default: insecure dev value) |
+| `SUPABASE_URL` | Không | Ghi đè DB paper chung bằng Supabase riêng |
+| `SUPABASE_ANON_KEY` | Không | Anon key cho Supabase riêng (đi kèm `SUPABASE_URL`) |
 
 ### Frontend (`frontend/.env`)
 
 | Biến | Mô tả |
 |------|--------|
-| `VITE_API_URL` | Backend URL (`http://localhost:8000` khi dev; `''` khi cùng origin) |
+| `VITE_API_URL` | Backend URL — để trống cũng được (vite proxy `/api` → `:8000` khi dev) |
 
 ### LLM Tiers
 
@@ -321,15 +290,6 @@ CREATE TABLE IF NOT EXISTS app_users (
 | `POST` | `/api/papers/recommend` | Paper liên quan / citing (OpenAlex) |
 | `POST` | `/api/papers/score` | Relevance score qua embedding cosine |
 | `POST` | `/api/papers/pdf/parse` | Upload PDF → parse text |
-
-### Auth
-
-| Method | Endpoint | Mô tả |
-|--------|----------|--------|
-| `POST` | `/auth/register` | Đăng ký tài khoản |
-| `POST` | `/auth/login` | Đăng nhập → JWT |
-| `GET` | `/auth/me` | Profile user (Bearer token) |
-| `PATCH` | `/auth/me` | Cập nhật display_name / language_pref |
 
 ### Utilities
 
@@ -395,7 +355,7 @@ paper_scout/
 │
 ├── 📂 frontend/src/
 │   ├── App.tsx                  # Root — routing (History API) + shared state
-│   ├── contexts/                # AuthContext, LanguageContext
+│   ├── contexts/                # LanguageContext
 │   ├── types/                   # paper.ts (Paper.pdfUrl), chat.ts, rag.ts
 │   ├── services/api.ts          # API calls + mappers
 │   ├── hooks/usePaperRagChat.ts # State machine ingest/ask dùng chung
@@ -409,9 +369,10 @@ paper_scout/
 │   │                             # ReaderScreen (📖 đọc PDF + hỏi đáp full-page), ChatScreen
 │   └── i18n/translations.ts    # EN/VI string table
 │
-├── supabase_migration_rag.sql   # SQL migration cho paper_chunks
+├── run.py                       # 🚀 Launcher 1 lệnh (backend + frontend song song)
+├── supabase_migration_rag.sql   # SQL migration cho Supabase riêng (tùy chọn)
 ├── config.toml                  # (git-ignored) LLM config
-└── pyproject.toml               # paper-agent CLI package
+└── pyproject.toml               # paper-agent CLI package + deps
 ```
 
 ---
@@ -443,7 +404,7 @@ React 18 · TypeScript · Vite · Tailwind CSS
 </td>
 <td>
 
-FastAPI · Python 3.10+ · tenacity · python-jose · bcrypt
+FastAPI · Python 3.10+ · tenacity · uvicorn
 
 </td>
 </tr>
@@ -479,52 +440,23 @@ Semantic Scholar · OpenReview · arXiv · OpenAlex · Crossref · DBLP
 </td>
 <td>
 
-Supabase (PostgreSQL) · SQLite (local library)
+Supabase chung (paper cache + RAG chunks) · localStorage + SQLite (dữ liệu cá nhân, local)
 
 </td>
 </tr>
 <tr>
 <td>
 
-**Auth**
+**Chạy**
 
 </td>
 <td>
 
-JWT (HS256, 30 ngày) · bcrypt password hashing
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Deploy**
-
-</td>
-<td>
-
-Railway (backend) · Vercel-ready (frontend)
+`python run.py` — backend + frontend song song, local, không cần deploy
 
 </td>
 </tr>
 </table>
-
----
-
-## 🚂 Deploy lên Railway
-
-```bash
-# Backend tự detect từ railway.toml
-# Đặt các env vars sau trong Railway dashboard:
-OPENAI_API_KEY=...
-SUPABASE_URL=...
-SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
-JWT_SECRET=...
-```
-
-Frontend: deploy trực tiếp bằng Vercel hoặc Railway Static Site.
-Đặt `VITE_API_URL` trỏ tới URL backend Railway.
 
 ---
 

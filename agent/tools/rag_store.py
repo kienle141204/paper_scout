@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import threading
 from typing import Any
 
@@ -24,12 +23,9 @@ def _get_client():
     with _lock:
         if _client_ready:
             return _client_obj
-        url = os.getenv("SUPABASE_URL")
-        key = (
-            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-            or os.getenv("SUPABASE_ANON_KEY")
-            or os.getenv("SUPABASE_KEY")
-        )
+        from agent.tools.shared_supabase import get_supabase_anon_key, get_supabase_url
+        url = get_supabase_url()
+        key = get_supabase_anon_key()
         if url and key:
             try:
                 from supabase import create_client

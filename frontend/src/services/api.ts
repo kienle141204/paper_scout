@@ -1,6 +1,5 @@
 import type { Conference, Paper } from '../types/paper'
 import type { ChatRequest, ChatResponse } from '../types/chat'
-import type { User } from '../contexts/AuthContext'
 import type { IngestResult, AskResult } from '../types/rag'
 
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
@@ -345,49 +344,6 @@ export async function analyzePaper(
   } finally {
     clearTimeout(timeoutId)
   }
-}
-
-// ── Auth API functions ───────────────────────────
-export interface AuthResponse {
-  token: string
-  user: User
-}
-
-export async function authLogin(params: { email: string; password: string }): Promise<AuthResponse> {
-  const res = await fetch(`${BASE}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  })
-  if (!res.ok) {
-    const err: { detail?: string } = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? `HTTP ${res.status}`)
-  }
-  return res.json()
-}
-
-export async function authRegister(params: { email: string; password: string; display_name?: string }): Promise<AuthResponse> {
-  const res = await fetch(`${BASE}/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  })
-  if (!res.ok) {
-    const err: { detail?: string } = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? `HTTP ${res.status}`)
-  }
-  return res.json()
-}
-
-export async function updateLanguagePref(token: string, lang: 'en' | 'vi'): Promise<void> {
-  await fetch(`${BASE}/auth/me`, {
-    method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ language_pref: lang }),
-  })
 }
 
 export async function searchPapers(

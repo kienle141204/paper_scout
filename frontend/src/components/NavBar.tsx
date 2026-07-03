@@ -3,7 +3,6 @@ import { Icon } from './atoms'
 import type { Screen } from '../types/paper'
 import MobileMenu from './MobileMenu'
 import { useLanguage } from '../contexts/LanguageContext'
-import { useAuth } from '../contexts/AuthContext'
 
 interface Props {
   screen: Screen
@@ -14,7 +13,6 @@ interface Props {
   onChat: () => void
   onSearch?: (query: string) => void
   onSettings: () => void
-  onLogin: () => void
 }
 
 function navLink(_href: string, handler: () => void, e: React.MouseEvent) {
@@ -22,12 +20,11 @@ function navLink(_href: string, handler: () => void, e: React.MouseEvent) {
   handler()
 }
 
-export default function NavBar({ screen, savedCount, query, onHome, onSaved, onChat, onSearch, onSettings, onLogin }: Props) {
+export default function NavBar({ screen, savedCount, query, onHome, onSaved, onChat, onSearch, onSettings }: Props) {
   const onInner = screen !== 'home'
   const [menuOpen, setMenuOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const { t } = useLanguage()
-  const { isLoggedIn, user } = useAuth()
 
   const nt = t.nav
 
@@ -143,31 +140,6 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
             >
               <Icon name="settings" size={15} />
             </button>
-
-            {/* Login / user avatar */}
-            {isLoggedIn && user ? (
-              <button
-                onClick={onSettings}
-                title={user.display_name ?? user.email}
-                style={{
-                  width: 30, height: 30, borderRadius: '50%',
-                  background: 'var(--ink)', color: 'var(--bg)',
-                  border: 'none', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 13, fontWeight: 700, flexShrink: 0,
-                }}
-              >
-                {(user.display_name ?? user.email)[0].toUpperCase()}
-              </button>
-            ) : (
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={onLogin}
-                style={{ fontSize: 13 }}
-              >
-                {nt.login}
-              </button>
-            )}
           </div>
 
           {/* Hamburger — mobile only */}
@@ -190,7 +162,6 @@ export default function NavBar({ screen, savedCount, query, onHome, onSaved, onC
         onSaved={() => { setMenuOpen(false); onSaved() }}
         onChat={() => { setMenuOpen(false); onChat() }}
         onSettings={() => { setMenuOpen(false); onSettings() }}
-        onLogin={() => { setMenuOpen(false); onLogin() }}
       />
     </>
   )
