@@ -368,23 +368,25 @@ function AppInner() {
         />
       )}
 
-      <footer style={{
-        borderTop: '1px solid var(--border)',
-        padding: '18px 28px',
-        marginTop: 'auto',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        flexWrap: 'wrap',
-        gap: 8,
-      }}>
-        <span className="mono muted" style={{ fontSize: 12 }}>
-          PaperScout · prototype
-        </span>
-        <span className="mono muted" style={{ fontSize: 12 }}>
-          {conferences.map((c) => c.name).join(' · ')}
-        </span>
-      </footer>
+      {screen !== 'reader' && (
+        <footer style={{
+          borderTop: '1px solid var(--border)',
+          padding: '18px 28px',
+          marginTop: 'auto',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 8,
+        }}>
+          <span className="mono muted" style={{ fontSize: 12 }}>
+            PaperScout · prototype
+          </span>
+          <span className="mono muted" style={{ fontSize: 12 }}>
+            {conferences.map((c) => c.name).join(' · ')}
+          </span>
+        </footer>
+      )}
     </div>
   )
 }

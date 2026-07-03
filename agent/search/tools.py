@@ -202,7 +202,7 @@ def _search_fallback(query: str, params: SearchParams) -> list[dict[str, Any]]:
             "venue": venue,
             "conference": conference,
             "url": p.url,
-            "pdf_url": None,
+            "pdf_url": f"https://openreview.net/pdf?id={p.id}" if p.id else None,
             "citation_count": None,
             "relevance_score": None,
             "key_contributions": [],

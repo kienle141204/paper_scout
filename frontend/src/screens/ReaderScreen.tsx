@@ -6,6 +6,7 @@ import { ReasoningBlock, VerificationBadge, AnswerMeta, MessageContent } from '.
 import type { Paper } from '../types/paper'
 import { useLanguage } from '../contexts/LanguageContext'
 import { useAuth } from '../contexts/AuthContext'
+import { pdfProxyUrl } from '../services/api'
 
 interface Props {
   paper: Paper
@@ -59,7 +60,7 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack, onNee
   }
 
   return (
-    <div className="fade-in" style={{ flex: 1, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 60px)', minHeight: 0, overflow: 'hidden' }}>
+    <div className="fade-in" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
       {/* sub-header */}
       <div style={{ flex: 'none', height: 50, borderBottom: '1px solid var(--border)', background: 'var(--surface)', display: 'flex', alignItems: 'center', gap: 14, padding: '0 16px' }}>
         <button className="btn btn-ghost btn-sm" onClick={onBack} style={{ paddingLeft: 8, flex: 'none' }}>
@@ -82,7 +83,7 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack, onNee
       </div>
 
       {/* split */}
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'minmax(0, 1.32fr) minmax(380px, 1fr)', minHeight: 0 }}>
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'minmax(0, 1.05fr) minmax(440px, 0.95fr)', minHeight: 0 }}>
         {/* left: PDF */}
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, borderRight: '1px solid var(--border)', background: 'var(--surface-3)' }}>
           {paper.pdfUrl ? (
@@ -96,7 +97,7 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack, onNee
                 </a>
               </div>
               <iframe
-                src={paper.pdfUrl}
+                src={pdfProxyUrl(paper.pdfUrl)}
                 title={paper.titleEn}
                 style={{ flex: 1, border: 0, background: 'white' }}
               />

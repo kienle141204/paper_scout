@@ -5,6 +5,13 @@ import type { IngestResult, AskResult } from '../types/rag'
 
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
 
+// Routes a paper's PDF through our backend so <iframe> embedding works
+// regardless of the source's X-Frame-Options/CORS policy (e.g. OpenReview
+// blocks cross-origin framing; arXiv doesn't — proxying makes both uniform).
+export function pdfProxyUrl(pdfUrl: string): string {
+  return `${BASE}/api/papers/pdf/proxy?url=${encodeURIComponent(pdfUrl)}`
+}
+
 // ── Backend shapes ───────────────────────────────
 interface BackendConference {
   name: string

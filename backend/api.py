@@ -1096,6 +1096,50 @@ async def api_papers_pdf_parse(file: UploadFile = File(...), max_pages: int | No
     return result.to_dict()
 
 
+def _is_safe_pdf_url(url: str) -> bool:
+    """Basic SSRF guard for the PDF proxy: https only, hostname must not
+    resolve to a private/loopback/link-local address."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False
+    try:
+        addrs = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror:
+        return False
+    for family, _, _, _, sockaddr in addrs:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False
+    return True
+
+
+@app.get("/api/papers/pdf/proxy")
+def api_papers_pdf_proxy(url: str) -> Any:
+    """Stream a paper's PDF through our backend so the frontend <iframe> can
+    embed it regardless of the source's X-Frame-Options/CORS policy — those
+    only restrict browsers, not our server-side fetch_pdf() call."""
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+    from agent.tools.pdf_fetcher import fetch_pdf
+
+    if not _is_safe_pdf_url(url):
+        raise HTTPException(status_code=400, detail="Invalid or disallowed url")
+
+    pdf_path = fetch_pdf(url)
+    if not pdf_path:
+        raise HTTPException(status_code=404, detail="Could not fetch a valid PDF from this url")
+
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        background=BackgroundTask(lambda: pdf_path.unlink(missing_ok=True)),
+    )
+
+
 class FetchRequest(BaseModel):
     url: str
 
