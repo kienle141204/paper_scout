@@ -103,6 +103,8 @@ export function usePaperRagChat(paper: Paper) {
           coverage: res.coverage,
           plan: res.plan,
           verification: res.verification,
+          action: res.action,
+          suggested_query: res.suggested_query,
         },
       ])
     } catch (e) {

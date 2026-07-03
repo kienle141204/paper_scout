@@ -7,6 +7,14 @@ export interface Conference {
 
 export interface Paper {
   id: string
+  source?: string
+  sourceIds?: {
+    semantic_scholar?: string | null
+    openalex?: string | null
+    arxiv?: string | null
+    doi?: string | null
+    openreview?: string | null
+  }
   titleEn: string
   titleVi?: string
   abstractEn?: string
@@ -19,6 +27,16 @@ export interface Paper {
   pdfUrl?: string
   citations: number | null
   relevance: number
+  rankScore?: number | null
+  qualitySignals?: {
+    matched_filters?: string[]
+    source_count?: number
+    has_pdf?: boolean
+  }
+  whyRecommended?: string | null
+  relation?: string
+  relatedScore?: number
+  relatedReason?: string
   keywords: string[]
   keyContributions?: string[]
 }

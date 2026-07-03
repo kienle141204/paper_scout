@@ -113,7 +113,9 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack }: Pro
                 </div>
               </div>
               <h1 className="serif" style={{ fontSize: 19, lineHeight: 1.3, margin: '0 0 12px', color: 'var(--ink)' }}>{paper.titleEn}</h1>
-              <div className="muted" style={{ fontSize: 12.5, marginBottom: 16 }}>{paper.authors.join(' · ')}</div>
+              <div className="muted" style={{ fontSize: 12.5, marginBottom: 16 }}>
+                {paper.authors.filter(Boolean).join(' · ') || 'Không rõ tác giả'}
+              </div>
               <RichText
                 text={paper.abstractVi ?? paper.abstractEn ?? '—'}
                 style={{ fontSize: 15, lineHeight: 1.75, color: 'var(--ink)' }}

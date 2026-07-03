@@ -197,7 +197,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
             {/* Authors */}
             <div className="flex items-center gap-2 mb-6" style={{ color: 'var(--ink-2)', fontSize: 14.5 }}>
               <Icon name="user" size={15} style={{ color: 'var(--ink-3)' }} />
-              {paper.authors.join(' · ')}
+              {paper.authors.filter(Boolean).join(' · ') || 'Không rõ tác giả'}
             </div>
 
             {/* Why relevant */}

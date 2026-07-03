@@ -56,6 +56,41 @@ def _compare_baselines(state: RAGState, cfg: Config) -> AnswerResult:
     return tools.generate(state.question, chunks, state.history, cfg=cfg, component="skill")
 
 
+def _translate_section(state: RAGState, cfg: Config) -> AnswerResult:
+    chunks = []
+    for section in ("abstract", "introduction", "method", "results", "conclusion"):
+        if section in (state.standalone_query or state.question).lower():
+            chunks += tools.get_section(state.paper_id, section, k=5)
+    if not chunks:
+        chunks = tools.retrieve(state.standalone_query or state.question, state.paper_id, k=6, cfg=cfg)
+    return tools.generate(state.question, chunks, state.history, cfg=cfg, component="skill")
+
+
+def _find_limitations(state: RAGState, cfg: Config) -> AnswerResult:
+    chunks = (
+        tools.get_section(state.paper_id, "limitation", k=4)
+        + tools.get_section(state.paper_id, "discussion", k=3)
+        + tools.get_section(state.paper_id, "conclusion", k=3)
+    )
+    if len(chunks) < 2:
+        chunks += tools.retrieve(state.standalone_query or state.question, state.paper_id, k=6, cfg=cfg)
+    return tools.generate(state.question, chunks, state.history, cfg=cfg, component="skill")
+
+
+def _explain_term(state: RAGState, cfg: Config) -> AnswerResult:
+    chunks = tools.retrieve(state.standalone_query or state.question, state.paper_id, k=6, cfg=cfg)
+    return tools.generate(state.question, chunks, state.history, cfg=cfg, component="skill")
+
+
+def _make_study_note(state: RAGState, cfg: Config) -> AnswerResult:
+    chunks = []
+    for section in ("abstract", "introduction", "method", "results", "conclusion"):
+        chunks += tools.get_section(state.paper_id, section, k=2)
+    if not chunks:
+        chunks = tools.retrieve(state.standalone_query or state.question, state.paper_id, k=8, cfg=cfg)
+    return tools.generate(state.question, chunks, state.history, cfg=cfg, component="skill")
+
+
 SKILL_REGISTRY: dict[str, Skill] = {
     "summarize_paper": Skill(
         name="summarize_paper",
@@ -78,6 +113,26 @@ SKILL_REGISTRY: dict[str, Skill] = {
         when_to_use="so sánh baseline / so với phương pháp khác / compare to prior work",
         run=_compare_baselines,
     ),
+    "translate_section": Skill(
+        name="translate_section",
+        when_to_use="dịch abstract/section/đoạn trong paper / translate a section",
+        run=_translate_section,
+    ),
+    "find_limitations": Skill(
+        name="find_limitations",
+        when_to_use="limitations / giới hạn / điểm yếu / future work",
+        run=_find_limitations,
+    ),
+    "explain_term": Skill(
+        name="explain_term",
+        when_to_use="giải thích thuật ngữ / define term / what does this term mean in the paper",
+        run=_explain_term,
+    ),
+    "make_study_note": Skill(
+        name="make_study_note",
+        when_to_use="tạo study note / reading note / ghi chú học thuật",
+        run=_make_study_note,
+    ),
 }
 
 # Keyword heuristics used by the dispatcher's cheap rule-based pre-filter
@@ -87,4 +142,8 @@ SKILL_KEYWORDS: dict[str, list[str]] = {
     "extract_methodology": ["phương pháp", "phuong phap", "how does", "method work", "approach", "algorithm"],
     "extract_results": ["kết quả", "ket qua", "accuracy", "số liệu", "so lieu", "results", "metric", "benchmark"],
     "compare_baselines": ["so sánh", "so sanh", "compare", "baseline", "prior work", "so với", "so voi"],
+    "translate_section": ["dịch", "dich", "translate"],
+    "find_limitations": ["limitation", "limitations", "giới hạn", "gioi han", "điểm yếu", "diem yeu", "future work"],
+    "explain_term": ["giải thích", "giai thich", "define", "thuật ngữ", "thuat ngu", "what does"],
+    "make_study_note": ["study note", "reading note", "ghi chú", "ghi chu", "note học", "note hoc"],
 }

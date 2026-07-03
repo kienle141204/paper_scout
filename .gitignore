@@ -32,7 +32,7 @@ Thumbs.db
 
 # Logs
 *.log
-logs/
+/logs/
 
 # Local config & personal data (single-user local tool)
 config.toml

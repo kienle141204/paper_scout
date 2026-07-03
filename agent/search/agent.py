@@ -11,8 +11,10 @@ from agent.core.trace import new_trace
 
 from . import tools as search_tools
 from .guardrails import input_guardrail, output_guardrail
+from .query_analyzer import analyze_search_params
 from .state import SearchParams, SearchState
 from .synthesize import synthesize
+from .workspace import cache_key, get_cached_search, put_cached_search, save_search_session
 
 
 @dataclass
@@ -22,6 +24,10 @@ class SearchRunResult:
     query: str
     has_more: bool
     corrected_query: str | None
+    session_id: str | None = None
+    query_plan: dict = field(default_factory=dict)
+    source_stats: dict = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
     synthesis: str | None = None
     synthesis_citations: list[dict] = field(default_factory=list)
     degraded: bool = False
@@ -35,6 +41,10 @@ class SearchRunResult:
             "query": self.query,
             "has_more": self.has_more,
             "corrected_query": self.corrected_query,
+            "session_id": self.session_id,
+            "query_plan": self.query_plan,
+            "source_stats": self.source_stats,
+            "warnings": self.warnings,
         }
         if self.synthesis is not None or self.synthesis_citations:
             out["synthesis"] = self.synthesis
@@ -52,6 +62,7 @@ def run_search(
     trace = new_trace("search", session_id=session_id)
     governor = Governor(default_budget("search"), trace, time.monotonic())
 
+    original_query = params.query
     gr = input_guardrail(params.query, cfg=cfg)
     trace.guardrails["input_pass"] = gr.passed
     if not gr.passed:
@@ -59,11 +70,58 @@ def run_search(
         trace.log()
         return SearchRunResult(
             papers=[], total=0, query=params.query, has_more=False,
-            corrected_query=params.corrected_query, refused=True, refusal_reason=gr.reason,
+            corrected_query=params.corrected_query, session_id=params.session_id,
+            refused=True, refusal_reason=gr.reason,
         )
 
-    state = SearchState(user_query=params.query)
+    analysis = analyze_search_params(params, cfg=cfg)
+    params = analysis.params
+    state = SearchState(user_query=original_query, normalized_query=params.query)
+    state.query_plan = analysis.query_plan
     state.search_queries = [params.query]
+    filters = {
+        "venues": params.conferences,
+        "year_from": params.year_from,
+        "year_to": params.year_to,
+        "language": params.language,
+    }
+    should_persist_workspace = bool(params.use_cache or params.record_memory_events or params.session_id)
+    cache_key_value = cache_key(
+        query=params.query,
+        filters=filters,
+        sources=params.sources,
+        limit=params.limit,
+        offset=params.offset,
+    )
+    if params.use_cache:
+        cached = get_cached_search(cache_key_value)
+        if cached:
+            cached_stats = dict(cached.get("source_stats") or {})
+            cached_stats["cache_hit"] = True
+            sid = None
+            if should_persist_workspace:
+                sid = save_search_session(
+                    session_id=params.session_id,
+                    original_query=original_query,
+                    normalized_query=params.query,
+                    filters=filters,
+                    papers=cached["papers"],
+                    query_plan=cached.get("query_plan") or state.query_plan,
+                    source_stats=cached_stats,
+                )
+            trace.outcome = "answered"
+            trace.log()
+            selected = cached["papers"][: params.limit]
+            return SearchRunResult(
+                papers=selected,
+                total=len(cached["papers"]),
+                query=params.query,
+                has_more=len(cached["papers"]) > params.limit,
+                corrected_query=params.corrected_query,
+                session_id=sid,
+                query_plan=cached.get("query_plan") or state.query_plan,
+                source_stats=cached_stats,
+            )
 
     try:
         for iteration in range(max_iterations):
@@ -90,13 +148,16 @@ def run_search(
                 variant_queries = []
 
             try:
-                new_papers, has_more_this_round = search_tools.search_multi_source(
+                new_papers, has_more_this_round, round_stats = search_tools.search_multi_source(
                     query, variant_queries, params, state.seen_ids,
                     limit=params.limit, batch_limit=batch_limit, relax_filters=relax_filters,
+                    openalex_email=cfg.openalex_email,
                 )
+                state.source_stats[f"round_{iteration}"] = round_stats
             except Exception:
                 # A round failing outright shouldn't kill the whole run — stop
                 # iterating and synthesize/return whatever we already have.
+                state.warnings.append(f"search_round_{iteration}_failed")
                 break
 
             state.candidates += new_papers
@@ -138,12 +199,37 @@ def run_search(
     trace.outcome = trace.outcome or "answered"
     trace.log()
 
+    sid = None
+    if should_persist_workspace:
+        sid = save_search_session(
+            session_id=params.session_id,
+            original_query=original_query,
+            normalized_query=params.query,
+            filters=filters,
+            papers=state.selected,
+            query_plan=state.query_plan,
+            source_stats=state.source_stats,
+        )
+    if params.use_cache and state.selected:
+        put_cached_search(
+            cache_key_value,
+            normalized_query=params.query,
+            filters=filters,
+            papers=state.selected,
+            query_plan=state.query_plan,
+            source_stats=state.source_stats,
+        )
+
     return SearchRunResult(
         papers=selected,
         total=len(state.selected),
         query=params.query,
         has_more=has_more,
         corrected_query=params.corrected_query,
+        session_id=sid,
+        query_plan=state.query_plan,
+        source_stats=state.source_stats,
+        warnings=state.warnings,
         synthesis=synth_text,
         synthesis_citations=synth_citations,
         degraded=degraded,

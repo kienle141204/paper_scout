@@ -23,11 +23,14 @@ dependencies = [
   "python-dotenv>=1.0.0",
   "python-multipart>=0.0.9",
   "numpy>=1.24.0",
-  "openreview-py>=1.0.18",
+  "notion-client>=2.2.1",
 ]
 
 [project.scripts]
 paper-agent = "agent.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
 
 [tool.setuptools]
 include-package-data = true

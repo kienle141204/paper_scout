@@ -33,6 +33,8 @@ export interface RagMessage {
   coverage?: 'full' | 'partial' | 'insufficient'
   plan?: RagPlan
   verification?: RagVerification
+  action?: 'suggest_search' | null
+  suggested_query?: string | null
   loading?: boolean
 }
 
@@ -51,4 +53,6 @@ export interface AskResult {
   coverage?: 'full' | 'partial' | 'insufficient'
   plan?: RagPlan
   verification?: RagVerification
+  action?: 'suggest_search' | null
+  suggested_query?: string | null
 }

@@ -10,7 +10,9 @@ dedupe — these implement the doc's sufficiency/rewrite loop.
 from __future__ import annotations
 
 import datetime
+import math
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Literal
 
@@ -18,14 +20,20 @@ import requests
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from agent.config import Config
+from agent.model import Paper
+from agent.tools.arxiv import arxiv_pdf_url, search_arxiv
+from agent.tools.openalex_search import search_openalex
 from agent.tools.paper_search import search_papers
 from agent.tools.relevance import score_batch
 
+from .source_router import route_sources
 from .state import SearchParams, SearchState
 
 _S2_BASE = "https://api.semanticscholar.org/graph/v1"
 _S2_FIELDS = "paperId,title,abstract,authors,year,venue,externalIds,openAccessPdf,citationCount"
 _S2_API_KEY: str = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
+
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
 _CONF_VENUE_ALIASES: dict[str, list[str]] = {
     "NeurIPS": ["NeurIPS", "Neural Information Processing Systems", "NIPS"],
@@ -83,8 +91,17 @@ def _paper_from_s2(item: dict[str, Any]) -> dict[str, Any]:
     pdf = item.get("openAccessPdf") or {}
     url = pdf.get("url") or (f"https://doi.org/{ext['DOI']}" if ext.get("DOI") else None)
     url = url or f"https://www.semanticscholar.org/paper/{item['paperId']}"
+    source_ids = {
+        "semantic_scholar": item.get("paperId"),
+        "openalex": ext.get("OpenAlex"),
+        "arxiv": ext.get("ArXiv"),
+        "doi": ext.get("DOI"),
+        "openreview": ext.get("OpenReview"),
+    }
     return {
         "paper_id": item["paperId"],
+        "source": "semantic_scholar",
+        "source_ids": source_ids,
         "title": item.get("title") or "",
         "abstract": item.get("abstract"),
         "summary": None,
@@ -100,13 +117,57 @@ def _paper_from_s2(item: dict[str, Any]) -> dict[str, Any]:
         "pdf_url": pdf.get("url") or None,
         "citation_count": item.get("citationCount"),
         "relevance_score": None,
+        "rank_score": None,
+        "quality_signals": {
+            "matched_filters": [],
+            "source_count": 1,
+            "has_pdf": bool(pdf.get("url")),
+        },
+        "why_recommended": None,
         "key_contributions": [],
         "tags": [],
     }
 
 
+def _paper_from_model(paper: Paper) -> dict[str, Any]:
+    source_ids = {
+        "semantic_scholar": None,
+        "openalex": paper.id if paper.source == "openalex" else None,
+        "arxiv": paper.id if paper.source == "arxiv" else None,
+        "doi": paper.doi,
+        "openreview": paper.id if paper.source == "openreview" else None,
+    }
+    pdf_url = arxiv_pdf_url(paper.id) if paper.source == "arxiv" and paper.id else None
+    return {
+        "paper_id": paper.id or paper.doi or paper.url or paper.title,
+        "source": paper.source,
+        "source_ids": source_ids,
+        "title": paper.title or "",
+        "abstract": paper.abstract,
+        "summary": None,
+        "title_vi": None,
+        "authors": [{"name": a} for a in paper.authors],
+        "year": paper.year,
+        "venue": paper.venue or "",
+        "conference": normalize_venue(paper.venue),
+        "url": paper.url,
+        "pdf_url": pdf_url,
+        "citation_count": None,
+        "relevance_score": None,
+        "rank_score": None,
+        "quality_signals": {
+            "matched_filters": [],
+            "source_count": 1,
+            "has_pdf": bool(pdf_url),
+        },
+        "why_recommended": None,
+        "key_contributions": [],
+        "tags": list(paper.keywords),
+    }
+
+
 def score_and_rank(query: str, papers: list[dict[str, Any]], *, cfg: Config) -> list[dict[str, Any]]:
-    """Compute embedding-based relevance scores in one batched API call, then sort descending."""
+    """Compute embedding relevance, then sort by blended rank_score."""
     texts = [f"{p.get('title', '')}. {(p.get('abstract') or '')[:500]}" for p in papers]
     try:
         provider = cfg.llm_provider
@@ -115,10 +176,52 @@ def score_and_rank(query: str, papers: list[dict[str, Any]], *, cfg: Config) -> 
         scores = score_batch(query=query, texts=texts, provider=provider, model=model, base_url=base_url)
         for paper, score in zip(papers, scores):
             paper["relevance_score"] = round(score, 4)
-        papers.sort(key=lambda p: p.get("relevance_score") or 0, reverse=True)
     except Exception:
         pass  # embedding failed — keep papers as-is with relevance_score=None
+
+    for paper in papers:
+        paper["rank_score"] = _rank_score(paper)
+        paper["why_recommended"] = _why_recommended(paper)
+
+    papers.sort(key=lambda p: p.get("rank_score") or p.get("relevance_score") or 0, reverse=True)
     return papers
+
+
+def _rank_score(paper: dict[str, Any]) -> float:
+    relevance = float(paper.get("relevance_score") or 0)
+    current_year = datetime.datetime.now().year
+    try:
+        year = int(paper.get("year") or 0)
+        recency = max(0.0, 1.0 - min(max(current_year - year, 0), 10) / 10)
+    except Exception:
+        recency = 0.0
+    try:
+        citations = min(1.0, math.log10(max(int(paper.get("citation_count") or 0), 0) + 1) / 4)
+    except Exception:
+        citations = 0.0
+    quality = paper.get("quality_signals") or {}
+    filter_match = 1.0 if quality.get("matched_filters") else 0.0
+    source_quality = 0.0
+    if quality.get("has_pdf"):
+        source_quality += 0.5
+    source_quality += min(0.5, 0.15 * int(quality.get("source_count") or 1))
+    score = 0.65 * relevance + 0.15 * recency + 0.10 * citations + 0.05 * filter_match + 0.05 * source_quality
+    return round(score, 4)
+
+
+def _why_recommended(paper: dict[str, Any]) -> str:
+    bits = []
+    if paper.get("relevance_score") is not None:
+        bits.append("strong abstract/title match")
+    if (paper.get("quality_signals") or {}).get("matched_filters"):
+        bits.append("matches requested filters")
+    if paper.get("pdf_url"):
+        bits.append("has an open PDF")
+    if paper.get("citation_count"):
+        bits.append("has citation signal")
+    if not bits:
+        bits.append("matches the search query metadata")
+    return "Recommended because it " + ", ".join(bits[:3]) + "."
 
 
 def _enrich_citation_counts(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -193,6 +296,14 @@ def _search_fallback(query: str, params: SearchParams) -> list[dict[str, Any]]:
         conference = normalize_venue(venue) or (p.id or "").split("/")[0].upper()
         papers.append({
             "paper_id": p.id or "",
+            "source": "openreview",
+            "source_ids": {
+                "semantic_scholar": None,
+                "openalex": None,
+                "arxiv": None,
+                "doi": None,
+                "openreview": p.id or None,
+            },
             "title": p.title,
             "abstract": p.abstract,
             "summary": None,
@@ -205,6 +316,13 @@ def _search_fallback(query: str, params: SearchParams) -> list[dict[str, Any]]:
             "pdf_url": f"https://openreview.net/pdf?id={p.id}" if p.id else None,
             "citation_count": None,
             "relevance_score": None,
+            "rank_score": None,
+            "quality_signals": {
+                "matched_filters": [],
+                "source_count": 1,
+                "has_pdf": bool(p.id),
+            },
+            "why_recommended": None,
             "key_contributions": [],
             "tags": list(p.keywords),
         })
@@ -260,6 +378,137 @@ def _collect_from_raw(
         papers.append(p)
 
 
+def _title_key(title: str | None, year: Any = None) -> str | None:
+    if not title:
+        return None
+    normalized = _NON_ALNUM_RE.sub(" ", title.lower()).strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    if not normalized:
+        return None
+    return f"title:{normalized}:{year or ''}"
+
+
+def _canonical_keys(paper: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    source_ids = paper.get("source_ids") or {}
+    if isinstance(source_ids, dict):
+        for label in ("doi", "arxiv", "semantic_scholar", "openalex", "openreview"):
+            value = source_ids.get(label)
+            if value:
+                keys.append(f"{label}:{str(value).lower()}")
+    for label in ("doi", "paper_id", "url"):
+        value = paper.get(label)
+        if value:
+            keys.append(f"{label}:{str(value).lower()}")
+    title_key = _title_key(paper.get("title"), paper.get("year"))
+    if title_key:
+        keys.append(title_key)
+    return keys
+
+
+def _merge_papers(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    for field in ("abstract", "url", "pdf_url", "venue", "conference", "year", "citation_count"):
+        if not merged.get(field) and incoming.get(field):
+            merged[field] = incoming[field]
+
+    existing_ids = dict(merged.get("source_ids") or {})
+    incoming_ids = incoming.get("source_ids") or {}
+    if isinstance(incoming_ids, dict):
+        for key, value in incoming_ids.items():
+            if value and not existing_ids.get(key):
+                existing_ids[key] = value
+    merged["source_ids"] = existing_ids
+
+    existing_authors = merged.get("authors") or []
+    names = {a.get("name") for a in existing_authors if isinstance(a, dict)}
+    for author in incoming.get("authors") or []:
+        name = author.get("name") if isinstance(author, dict) else str(author)
+        if name and name not in names:
+            existing_authors.append({"name": name})
+            names.add(name)
+    merged["authors"] = existing_authors
+
+    existing_tags = set(merged.get("tags") or [])
+    for tag in incoming.get("tags") or []:
+        if tag not in existing_tags:
+            merged.setdefault("tags", []).append(tag)
+            existing_tags.add(tag)
+
+    quality = dict(merged.get("quality_signals") or {})
+    incoming_quality = incoming.get("quality_signals") or {}
+    sources = {merged.get("source"), incoming.get("source")}
+    ids = merged.get("source_ids") or {}
+    sources.update(k for k, v in ids.items() if v)
+    quality["source_count"] = max(int(quality.get("source_count") or 1), len([s for s in sources if s]))
+    quality["has_pdf"] = bool(merged.get("pdf_url") or incoming.get("pdf_url") or quality.get("has_pdf") or incoming_quality.get("has_pdf"))
+    matched = list(dict.fromkeys((quality.get("matched_filters") or []) + (incoming_quality.get("matched_filters") or [])))
+    quality["matched_filters"] = matched
+    merged["quality_signals"] = quality
+    return merged
+
+
+def _dedupe_merged(papers: list[dict[str, Any]], seen_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    seen_ids = seen_ids or set()
+    key_to_idx: dict[str, int] = {}
+    merged: list[dict[str, Any]] = []
+    for paper in papers:
+        keys = _canonical_keys(paper)
+        idx = next((key_to_idx[k] for k in keys if k in key_to_idx), None)
+        if idx is not None:
+            merged[idx] = _merge_papers(merged[idx], paper)
+            continue
+        pid = paper.get("paper_id")
+        if pid in seen_ids:
+            continue
+        if pid:
+            seen_ids.add(pid)
+        key_idx = len(merged)
+        for key in keys:
+            key_to_idx[key] = key_idx
+        merged.append(paper)
+    return merged
+
+
+def _matches_filters(paper: dict[str, Any], params: SearchParams) -> bool:
+    year = paper.get("year")
+    if params.year_from is not None and year is not None and int(year) < params.year_from:
+        return False
+    if params.year_to is not None and year is not None and int(year) > params.year_to:
+        return False
+    if params.conferences:
+        conference = normalize_venue(paper.get("conference") or paper.get("venue"))
+        if conference not in params.conferences:
+            return False
+        paper["conference"] = conference
+    return True
+
+
+def _mark_matched_filters(paper: dict[str, Any], params: SearchParams) -> None:
+    matched: list[str] = []
+    if params.year_from is not None or params.year_to is not None:
+        matched.append("year")
+    if params.conferences and normalize_venue(paper.get("conference") or paper.get("venue")) in params.conferences:
+        matched.append("venue")
+    quality = dict(paper.get("quality_signals") or {})
+    quality["matched_filters"] = matched
+    quality["has_pdf"] = bool(paper.get("pdf_url") or quality.get("has_pdf"))
+    quality["source_count"] = int(quality.get("source_count") or 1)
+    paper["quality_signals"] = quality
+
+
+def _filter_and_finalize(papers: list[dict[str, Any]], params: SearchParams, seen_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    filtered = []
+    for paper in papers:
+        if not paper.get("abstract"):
+            continue
+        if not _matches_filters(paper, params):
+            continue
+        _mark_matched_filters(paper, params)
+        filtered.append(paper)
+    return _dedupe_merged(filtered, seen_ids)
+
+
 def search_multi_source(
     primary_query: str,
     variant_queries: list[str],
@@ -269,33 +518,43 @@ def search_multi_source(
     limit: int,
     batch_limit: int | None = None,
     relax_filters: bool = False,
-) -> tuple[list[dict[str, Any]], bool]:
+    openalex_email: str | None = None,
+) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
     """Run one search round: primary S2 query (fallback to OpenReview on 429)
     + variant queries fanned out in parallel. Mutates *seen_ids* in place so
     repeated rounds in the sufficiency loop don't re-collect the same papers.
-    Returns (new_papers_this_round, has_more).
+    Returns (new_papers_this_round, has_more, source_stats).
     """
     batch_limit = batch_limit or min(limit * 3, 100)
+    sources = route_sources(params)
+    stats: dict[str, Any] = {
+        "sources": {s: {"attempted": False, "count": 0, "error": None} for s in sources},
+        "routed_sources": sources,
+    }
     papers: list[dict[str, Any]] = []
 
-    try:
-        primary_raw = _call_s2(_build_s2_params(primary_query, params, batch_limit, relax_filters=relax_filters))
-    except requests.HTTPError as e:
-        status = e.response.status_code if e.response is not None else 0
-        if status == 429:
-            fallback = _search_fallback(primary_query, params)
-            new_fallback = [p for p in fallback if p["paper_id"] not in seen_ids]
-            for p in new_fallback:
-                seen_ids.add(p["paper_id"])
-            return new_fallback, len(new_fallback) >= limit
-        raise
-    except requests.RequestException:
-        raise
+    primary_raw: list[dict[str, Any]] = []
+    has_more = False
+    if "semantic_scholar" in sources:
+        stats["sources"]["semantic_scholar"]["attempted"] = True
+        try:
+            primary_raw = _call_s2(_build_s2_params(primary_query, params, batch_limit, relax_filters=relax_filters))
+            _collect_from_raw(primary_raw, params, seen_ids, papers, batch_limit, relax_filters=relax_filters)
+            has_more = len(primary_raw) >= batch_limit
+            stats["sources"]["semantic_scholar"]["count"] = len(primary_raw)
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+            stats["sources"]["semantic_scholar"]["error"] = f"http_{status}"
+            if status == 429 and "openreview" not in sources:
+                sources.append("openreview")
+                stats["sources"]["openreview"] = {"attempted": False, "count": 0, "error": None}
+            elif status != 429:
+                raise
+        except requests.RequestException:
+            stats["sources"]["semantic_scholar"]["error"] = "request_error"
+            raise
 
-    _collect_from_raw(primary_raw, params, seen_ids, papers, limit, relax_filters=relax_filters)
-    has_more = len(primary_raw) >= batch_limit
-
-    if variant_queries and len(papers) < limit:
+    if "semantic_scholar" in sources and variant_queries and len(papers) < limit:
         variant_params = [_build_s2_params(q, params, batch_limit, relax_filters=relax_filters) for q in variant_queries]
         with ThreadPoolExecutor(max_workers=len(variant_params)) as pool:
             futures = {pool.submit(_call_s2, p): p for p in variant_params}
@@ -303,26 +562,61 @@ def search_multi_source(
                 if len(papers) >= limit:
                     break
                 try:
-                    _collect_from_raw(future.result(), params, seen_ids, papers, limit, relax_filters=relax_filters)
+                    raw = future.result()
+                    _collect_from_raw(raw, params, seen_ids, papers, batch_limit, relax_filters=relax_filters)
                 except Exception:
                     pass  # variant failure is non-critical
 
-    return papers, has_more
+    if "openreview" in sources and len(papers) < batch_limit:
+        stats["sources"]["openreview"]["attempted"] = True
+        try:
+            fallback = _search_fallback(primary_query, params)
+            stats["sources"]["openreview"]["count"] = len(fallback)
+            papers.extend(fallback)
+        except Exception as exc:
+            stats["sources"]["openreview"]["error"] = exc.__class__.__name__
+
+    if "openalex" in sources and len(papers) < batch_limit:
+        stats["sources"]["openalex"]["attempted"] = True
+        try:
+            year = params.year_from if params.year_from == params.year_to else None
+            venue = params.conferences[0] if len(params.conferences) == 1 else None
+            raw_openalex = search_openalex(
+                query=primary_query,
+                venue=venue,
+                year=year,
+                limit=max(5, min(batch_limit, limit * 2)),
+                email=openalex_email,
+            )
+            openalex_papers = [_paper_from_model(p) for p in raw_openalex if p.abstract]
+            stats["sources"]["openalex"]["count"] = len(openalex_papers)
+            papers.extend(openalex_papers)
+        except Exception as exc:
+            stats["sources"]["openalex"]["error"] = exc.__class__.__name__
+
+    if "arxiv" in sources and len(papers) < batch_limit:
+        stats["sources"]["arxiv"]["attempted"] = True
+        try:
+            raw_arxiv = search_arxiv(query=primary_query, max_results=max(5, min(batch_limit, limit * 2)))
+            arxiv_papers = [_paper_from_model(p) for p in raw_arxiv if p.abstract]
+            stats["sources"]["arxiv"]["count"] = len(arxiv_papers)
+            papers.extend(arxiv_papers)
+        except Exception as exc:
+            stats["sources"]["arxiv"]["error"] = exc.__class__.__name__
+
+    papers = _filter_and_finalize(papers, params, seen_ids if "semantic_scholar" not in sources else set())
+    for p in papers:
+        if p.get("paper_id"):
+            seen_ids.add(p["paper_id"])
+    return papers, has_more, stats
 
 
 def dedupe(papers: list[dict[str, Any]], seen_ids: set[str]) -> tuple[list[dict[str, Any]], set[str]]:
-    """Standalone dedup helper for callers that already have a raw paper list
-    (search_multi_source already dedupes internally against seen_ids — this
-    is for any additional merge step, e.g. combining sources outside the
-    normal round flow).
-    """
-    new_papers = []
-    for p in papers:
-        pid = p.get("paper_id")
-        if not pid or pid in seen_ids:
-            continue
-        seen_ids.add(pid)
-        new_papers.append(p)
+    """Deduplicate by DOI/arXiv/source ids/title-year, merging metadata."""
+    new_papers = _dedupe_merged(papers, seen_ids)
+    for p in new_papers:
+        if p.get("paper_id"):
+            seen_ids.add(p["paper_id"])
     return new_papers, seen_ids
 
 

@@ -3,9 +3,15 @@ from __future__ import annotations
 import logging
 import re
 import time
+from types import SimpleNamespace
 from typing import Any
 
-import openreview
+import requests
+
+try:
+    import openreview
+except ModuleNotFoundError:  # pragma: no cover - depends on optional runtime extra
+    openreview = None
 
 from ..model import Paper
 
@@ -36,18 +42,40 @@ def _val(field: Any) -> Any:
     return field
 
 
-def _get_client() -> openreview.api.OpenReviewClient:
+def _get_client() -> Any:
+    if openreview is None:
+        return None
     return openreview.api.OpenReviewClient(baseurl=OPENREVIEW_BASE_URL)
 
 
-def _get_notes_with_retry(client: openreview.api.OpenReviewClient, **kwargs: Any) -> list[Any]:
+def _get_notes_http(**kwargs: Any) -> list[Any]:
+    resp = requests.get(f"{OPENREVIEW_BASE_URL}/notes", params=kwargs, timeout=30)
+    resp.raise_for_status()
+    payload = resp.json()
+    notes = payload.get("notes") or payload.get("results") or []
+    return [
+        SimpleNamespace(
+            id=note.get("id"),
+            content=note.get("content") or {},
+            invitation=note.get("invitation"),
+            invitations=note.get("invitations"),
+        )
+        for note in notes
+        if isinstance(note, dict)
+    ]
+
+
+def _get_notes_with_retry(client: Any, **kwargs: Any) -> list[Any]:
     """Wrapper around client.get_notes() với retry khi bị rate-limit (HTTP 429)."""
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
+            if client is None:
+                return _get_notes_http(**kwargs)
             return client.get_notes(**kwargs)
         except Exception as exc:
             msg = str(exc)
-            if "429" in msg or "RateLimitError" in msg or "Too many requests" in msg:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code == 429 or "429" in msg or "RateLimitError" in msg or "Too many requests" in msg:
                 # Cố trích thời gian chờ từ message, nếu không lấy được dùng default
                 wait = _RATE_LIMIT_WAIT
                 m = re.search(r"try again in (\d+) second", msg, re.IGNORECASE)

@@ -33,6 +33,14 @@ from agent.tools.library import (
     update_note,
     update_tags,
 )
+from agent.memory.store import (
+    LOCAL_USER_ID,
+    append_memory_event,
+    delete_all_memory,
+    delete_topic,
+    list_memory,
+    patch_preferences,
+)
 from agent.tools.major_venues import MAJOR_VENUES, major_search
 from agent.tools.paper_cache import get_cached_analysis, get_cached_paper, is_configured, upsert_analysis, upsert_paper
 from agent.tools.paper_detail import fetch_detail
@@ -40,6 +48,7 @@ from agent.tools.paper_search import search_papers, search_by_invitation
 from agent.tools.web_fetch import fetch_paper_from_url
 from agent.search.state import SearchParams
 from agent.search.agent import run_search
+from agent.search.related import RelatedPaperParams, recommend_related_papers
 
 # ── Conference metadata ───────────────────────────────────────────────────────
 
@@ -570,6 +579,9 @@ class PaperSearchRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     corrected_query: str | None = None
     include_synthesis: bool = False
+    session_id: str | None = None
+    sources: list[str] | None = Field(default_factory=lambda: ["openreview"])
+    use_cache: bool = True
     config_path: str | None = None
 
 
@@ -578,8 +590,11 @@ def api_papers_search(req: PaperSearchRequest) -> dict[str, Any]:
     cfg = _cfg(req.config_path)
     params = SearchParams(
         query=req.query, keyword_variants=req.keyword_variants, conferences=req.conferences,
-        year_from=req.year_from, year_to=req.year_to, limit=req.limit, offset=req.offset,
+        year_from=req.year_from, year_to=req.year_to, language=req.language,
+        limit=req.limit, offset=req.offset,
         corrected_query=req.corrected_query, include_synthesis=req.include_synthesis,
+        session_id=req.session_id, sources=["openreview"], use_cache=req.use_cache,
+        record_memory_events=True,
     )
     try:
         result = run_search(params, cfg=cfg)
@@ -587,6 +602,45 @@ def api_papers_search(req: PaperSearchRequest) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail="Nguồn dữ liệu phản hồi lỗi. Vui lòng thử lại sau.")
     except requests.RequestException:
         raise HTTPException(status_code=502, detail="Không thể kết nối nguồn dữ liệu. Vui lòng kiểm tra mạng.")
+    body = result.to_response_dict()
+    if not result.refused:
+        try:
+            append_memory_event(
+                event_type="search",
+                query=req.query,
+                metadata={"session_id": result.session_id, "normalized_query": result.query, "total": result.total},
+            )
+        except Exception:
+            pass
+    return body
+
+
+class RelatedPaperRequest(BaseModel):
+    focus_paper_id: str
+    current_session_id: str | None = None
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    limit: int = Field(default=3, ge=1, le=5)
+    config_path: str | None = None
+
+
+@app.post("/api/papers/related")
+def api_papers_related(req: RelatedPaperRequest) -> dict[str, Any]:
+    cfg = _cfg(req.config_path)
+    params = RelatedPaperParams(
+        focus_paper_id=req.focus_paper_id,
+        current_session_id=req.current_session_id,
+        candidates=req.candidates,
+        limit=req.limit,
+    )
+    result = recommend_related_papers(params, cfg=cfg)
+    try:
+        append_memory_event(
+            event_type="click_paper",
+            paper_id=req.focus_paper_id,
+            metadata={"session_id": req.current_session_id, "related_count": len(result.related)},
+        )
+    except Exception:
+        pass
     return result.to_response_dict()
 
 
@@ -1117,6 +1171,37 @@ def profile_get(req: ProfileGetRequest) -> dict[str, Any]:
     return {"profile": get_profile(Path(req.db_path) if req.db_path else DEFAULT_DB_PATH)}
 
 
+# ── Local memory API ─────────────────────────────────────────────────────────
+
+
+class MemoryPatchRequest(BaseModel):
+    preferences: dict[str, Any] = Field(default_factory=dict)
+    db_path: str | None = None
+
+
+@app.get("/api/memory/me")
+def memory_me() -> dict[str, Any]:
+    return list_memory(user_id=LOCAL_USER_ID)
+
+
+@app.patch("/api/memory/preferences")
+def memory_patch(req: MemoryPatchRequest) -> dict[str, Any]:
+    patch_preferences(req.preferences, db_path=Path(req.db_path) if req.db_path else DEFAULT_DB_PATH)
+    return {"ok": True}
+
+
+@app.delete("/api/memory/topics/{topic_id}")
+def memory_delete_topic(topic_id: str) -> dict[str, Any]:
+    delete_topic(topic_id)
+    return {"ok": True}
+
+
+@app.delete("/api/memory/me")
+def memory_delete_all() -> dict[str, Any]:
+    delete_all_memory(user_id=LOCAL_USER_ID)
+    return {"ok": True}
+
+
 # ── RAG paper agent ───────────────────────────────────────────────────────────
 
 from agent.tools.rag_store import is_configured as rag_configured
@@ -1124,6 +1209,8 @@ from agent.tools.rag_store import is_ingested as rag_is_ingested
 from agent.rag.ingest import IngestError, ingest_paper
 from agent.rag.ingest import IngestRequest as _IngestArgs
 from agent.rag.agent import RagAskParams, run_rag_ask
+from agent.rag.notion_export import ExportOptions, export_paper_note
+from agent.tools.notion_client import NotionConfigError
 
 
 @app.get("/api/agent/status")
@@ -1209,4 +1296,51 @@ def api_papers_ask(req: RagAskRequest) -> dict[str, Any]:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     if result.refused and not result.answer and not result.chunks:
         raise HTTPException(status_code=404, detail=result.refusal_reason or "Câu hỏi không hợp lệ.")
+    try:
+        append_memory_event(
+            event_type="ask_question",
+            paper_id=req.paper_id,
+            query=req.question,
+            metadata={"action": result.action, "suggested_query": result.suggested_query},
+        )
+    except Exception:
+        pass
+    return result.to_response_dict()
+
+
+class NotionExportRequest(BaseModel):
+    paper_id: str
+    note_type: Literal["summary", "qa", "full_reading_note"] = "summary"
+    include_qa_history: bool = False
+    target_database_id: str | None = None
+    target_page_id: str | None = None
+    paper: dict[str, Any] | None = None
+    qa_history: list[ChatMessageModel] = Field(default_factory=list)
+
+
+@app.post("/api/papers/export/notion")
+def api_papers_export_notion(req: NotionExportRequest) -> dict[str, Any]:
+    options = ExportOptions(
+        paper_id=req.paper_id,
+        note_type=req.note_type,
+        include_qa_history=req.include_qa_history,
+        target_database_id=req.target_database_id,
+        target_page_id=req.target_page_id,
+        paper=req.paper,
+        qa_history=[{"role": m.role, "content": m.content} for m in req.qa_history],
+    )
+    try:
+        result = export_paper_note(options)
+    except NotionConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Notion export failed: {e}")
+    try:
+        append_memory_event(
+            event_type="export_notion",
+            paper_id=req.paper_id,
+            metadata={"notion_page_id": result.notion_page_id, "note_type": req.note_type},
+        )
+    except Exception:
+        pass
     return result.to_response_dict()

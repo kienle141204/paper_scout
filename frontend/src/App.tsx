@@ -10,7 +10,7 @@ import SavedScreen from './screens/SavedScreen'
 import ChatScreen from './screens/ChatScreen'
 import type { Paper, Conference, Filters, SortKey, Screen } from './types/paper'
 import { DEFAULT_FILTERS } from './types/paper'
-import { getConferences, searchPapers, parseQuery } from './services/api'
+import { getConferences, searchPapers, parseQuery, getRelatedPapers } from './services/api'
 import type { SearchParams } from './services/api'
 import { LanguageProvider } from './contexts/LanguageContext'
 
@@ -40,10 +40,11 @@ function parseInitialUrl(): { screen: Screen; selectedId: string | null } {
 
 // Parse URL once before component mounts (not inside render loop)
 const _INIT = parseInitialUrl()
+type NavEntry = { screen: Screen; selectedId: string | null }
 
 function AppInner() {
   const [screen, setScreen] = useState<Screen>(_INIT.screen)
-  const [prevScreen, setPrevScreen] = useState<Screen>('results')
+  const [navStack, setNavStack] = useState<NavEntry[]>([])
   const [query, setQuery] = useState('')
   const [papers, setPapers] = useState<Paper[]>([])
   const [loading, setLoading] = useState(false)
@@ -60,6 +61,8 @@ function AppInner() {
   const [conferences, setConferences] = useState<Conference[]>([])
   const [confError, setConfError] = useState(false)
   const [lastSearchParams, setLastSearchParams] = useState<SearchParams | null>(null)
+  const [currentSearchSessionId, setCurrentSearchSessionId] = useState<string | null>(null)
+  const [relatedPapers, setRelatedPapers] = useState<Paper[]>([])
   const [hasMore, setHasMore] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const [correctedQuery, setCorrectedQuery] = useState<string | null>(null)
@@ -89,6 +92,7 @@ function AppInner() {
       const s = e.state as { screen?: Screen; selectedId?: string | null; query?: string } | null
       if (!s?.screen) return
       isPopping.current = true
+      setNavStack([])
       setScreen(s.screen)
       setSelectedId(s.selectedId ?? null)
       if (s.query !== undefined) setQuery(s.query)
@@ -117,6 +121,10 @@ function AppInner() {
     setLoading(true)
     setError(null)
     setPapers([])
+    setRelatedPapers([])
+    setCurrentSearchSessionId(null)
+    setNavStack([])
+    setSelectedId(null)
     setHasMore(false)
     setCorrectedQuery(null)
     setCurrentPage(1)
@@ -126,6 +134,8 @@ function AppInner() {
       setPapers(result.papers)
       setHasMore(result.hasMore)
       setCorrectedQuery(result.correctedQuery)
+      setCurrentSearchSessionId(result.sessionId)
+      setLastSearchParams({ ...params, sessionId: result.sessionId })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unknown error occurred.')
     } finally {
@@ -144,13 +154,15 @@ function AppInner() {
       const result = await searchPapers({ ...lastSearchParams, offset: (page - 1) * PAGE_SIZE, limit: PAGE_SIZE })
       setPapers(result.papers)
       setHasMore(result.hasMore)
+      setCurrentSearchSessionId(result.sessionId ?? currentSearchSessionId)
+      setLastSearchParams({ ...lastSearchParams, sessionId: result.sessionId ?? currentSearchSessionId })
       setCurrentPage(page)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unknown error occurred.')
     } finally {
       setLoading(false)
     }
-  }, [lastSearchParams, PAGE_SIZE])
+  }, [lastSearchParams, PAGE_SIZE, currentSearchSessionId])
 
   const handleSearch = useCallback(
     async (args: { query: string; confs: string[]; yearFrom: number; yearTo: number }) => {
@@ -197,10 +209,12 @@ function AppInner() {
   }, [papers, chatPapersMap])
 
   const openPaper = useCallback((id: string) => {
-    setPrevScreen(screen)
+    if (screen !== 'detail' || selectedId !== id) {
+      setNavStack((prev) => [...prev, { screen, selectedId }])
+    }
     setSelectedId(id)
     setScreen('detail')
-  }, [screen])
+  }, [screen, selectedId])
 
   const openPaperObj = useCallback((paper: Paper) => {
     setChatPapersMap((prev) => (paper.id in prev ? prev : { ...prev, [paper.id]: paper }))
@@ -208,14 +222,22 @@ function AppInner() {
   }, [openPaper])
 
   const openReader = useCallback((id: string) => {
-    setPrevScreen('detail')
+    setNavStack((prev) => [...prev, { screen: 'detail', selectedId: id }])
     setSelectedId(id)
     setScreen('reader')
   }, [])
 
   const handleBack = useCallback(() => {
-    setScreen(prevScreen)
-  }, [prevScreen])
+    const target = navStack[navStack.length - 1]
+    setNavStack((prev) => prev.slice(0, -1))
+    if (target) {
+      setScreen(target.screen)
+      setSelectedId(target.selectedId)
+      return
+    }
+    setSelectedId(null)
+    setScreen(lastSearchParams ? 'results' : 'home')
+  }, [navStack, lastSearchParams])
 
   const selected = useMemo(
     () => papers.find((p) => p.id === selectedId)
@@ -223,7 +245,7 @@ function AppInner() {
     [papers, selectedId, chatPapersMap, savedMap],
   )
 
-  const related = useMemo(() => {
+  const fallbackRelated = useMemo(() => {
     if (!selected) return []
     const kws = new Set(selected.keywords.map((k) => k.toLowerCase()))
     const pool = papers.length > 0 ? papers : Object.values(chatPapersMap)
@@ -232,6 +254,28 @@ function AppInner() {
       .sort((a, b) => b.relevance - a.relevance)
       .slice(0, 3)
   }, [selected, papers, chatPapersMap])
+
+  useEffect(() => {
+    if (!selected || screen !== 'detail') {
+      setRelatedPapers([])
+      return
+    }
+    let cancelled = false
+    setRelatedPapers(fallbackRelated)
+    getRelatedPapers({
+      focusPaperId: selected.id,
+      currentSessionId: currentSearchSessionId,
+      candidates: papers.length > 0 ? papers : Object.values(chatPapersMap),
+      limit: 3,
+    })
+      .then((items) => {
+        if (!cancelled && items.length > 0) setRelatedPapers(items)
+      })
+      .catch(() => {
+        if (!cancelled) setRelatedPapers(fallbackRelated)
+      })
+    return () => { cancelled = true }
+  }, [selected, screen, currentSearchSessionId, papers, chatPapersMap, fallbackRelated])
 
   const savedPapers = useMemo(() => Object.values(savedMap), [savedMap])
 
@@ -291,7 +335,7 @@ function AppInner() {
         <DetailScreen
           paper={selected}
           saved={savedIds.includes(selected.id)}
-          related={related}
+          related={relatedPapers}
           conferences={conferences}
           onToggleSave={() => toggleSave(selected.id)}
           onBack={handleBack}

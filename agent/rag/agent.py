@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+import re
 
 from agent.config import Config
 from agent.core.budget import default_budget
@@ -46,6 +47,8 @@ class RagAskResult:
     coverage: str
     plan: dict
     verification: dict
+    action: str | None = None
+    suggested_query: str | None = None
     refused: bool = False
     refusal_reason: str | None = None
 
@@ -58,7 +61,36 @@ class RagAskResult:
             "coverage": self.coverage,
             "plan": self.plan,
             "verification": self.verification,
+            "action": self.action,
+            "suggested_query": self.suggested_query,
         }
+
+
+_SEARCH_REQUEST_RE = re.compile(
+    r"(tìm|tim|search|find|recommend|gợi ý|goi y|paper khác|paper khac|related paper|papers? similar|papers? about)",
+    re.IGNORECASE,
+)
+
+
+def _suggest_search_result(params: RagAskParams) -> RagAskResult | None:
+    if not _SEARCH_REQUEST_RE.search(params.question):
+        return None
+    seed = params.title or params.abstract or params.question
+    query = seed[:180].strip() or params.question
+    return RagAskResult(
+        answer=(
+            "Câu này cần quay lại luồng tìm kiếm paper. Tôi không tự gọi Search Agent từ Reader, "
+            "nhưng có thể dùng truy vấn gợi ý bên dưới để tìm các paper liên quan."
+        ),
+        citations=[],
+        chunks=[],
+        confidence="high",
+        coverage="full",
+        plan={"mode": "suggest_search", "skill_used": None, "degraded": False},
+        verification={"is_grounded": True, "hallucination_risk": "none", "issues": []},
+        action="suggest_search",
+        suggested_query=query,
+    )
 
 
 def _run_fast(state: RAGState, *, cfg: Config, governor: Governor) -> AnswerResult:
@@ -85,6 +117,12 @@ def run_rag_ask(params: RagAskParams, *, cfg: Config, session_id: str | None = N
             plan={}, verification={"is_grounded": True, "hallucination_risk": "none", "issues": []},
             refused=True, refusal_reason=gr.reason,
         )
+
+    suggested = _suggest_search_result(params)
+    if suggested:
+        trace.outcome = "answered"
+        trace.log()
+        return suggested
 
     if not rag_store.is_ingested(params.paper_id):
         if params.title or params.abstract:
