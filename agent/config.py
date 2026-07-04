@@ -27,6 +27,7 @@ class Config:
     mineru_backend: str = "pipeline"   # pipeline (CPU) | vlm-transformers (GPU)
     mineru_device: str = "cpu"         # cpu | cuda
     mineru_lang: str = "en"
+    mineru_model_source: str = "huggingface"  # huggingface | modelscope (dùng khi HF bị chặn/chập chờn)
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
@@ -59,6 +60,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
         mineru_backend=parser.get("mineru_backend", "pipeline"),
         mineru_device=parser.get("mineru_device", "cpu"),
         mineru_lang=parser.get("mineru_lang", "en"),
+        mineru_model_source=parser.get("mineru_model_source", "huggingface"),
     )
 
 
@@ -96,6 +98,7 @@ parser = "mineru"
 mineru_backend = "pipeline"   # pipeline = CPU; đổi "vlm-transformers" nếu có GPU NVIDIA
 mineru_device = "cpu"          # cpu | cuda
 mineru_lang = "en"
+mineru_model_source = "huggingface"   # đổi "modelscope" nếu Hugging Face bị chặn/chập chờn (VN)
 """,
         encoding="utf-8",
     )

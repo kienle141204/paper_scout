@@ -123,6 +123,7 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
                     backend=cfg.mineru_backend,
                     device=cfg.mineru_device,
                     lang=cfg.mineru_lang,
+                    model_source=cfg.mineru_model_source,
                 )
                 try:
                     pdf_store.store_parsed_json(req.paper_id, content_list)

@@ -953,6 +953,7 @@ async def api_papers_pdf_parse(file: UploadFile = File(...), max_pages: int | No
         result = parse_pdf(
             temp_path, max_pages=max_pages,
             backend=c.mineru_backend, device=c.mineru_device, lang=c.mineru_lang,
+            model_source=c.mineru_model_source,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
