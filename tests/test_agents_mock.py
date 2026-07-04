@@ -147,6 +147,11 @@ def fake_store(monkeypatch):
     monkeypatch.setattr(rag_store, "get_all_chunks", store.get_all_chunks)
     monkeypatch.setattr(rag_store, "retrieve_chunks", store.retrieve_chunks)
     monkeypatch.setattr(rag_store, "retrieve_by_section", store.retrieve_by_section)
+    # Keep the PDF cache offline in tests (no Supabase Storage network calls).
+    from agent.tools import pdf_store
+    monkeypatch.setattr(pdf_store, "download_pdf", lambda paper_id: None)
+    monkeypatch.setattr(pdf_store, "store_pdf_bytes", lambda paper_id, data: True)
+    monkeypatch.setattr(pdf_store, "cached_pdf_url", lambda paper_id: None)
     return store
 
 
@@ -199,8 +204,6 @@ def test_source_router_defaults_to_openreview():
 
 
 def test_openreview_http_fallback_maps_authors(monkeypatch):
-    monkeypatch.setattr(openreview_search_mod, "openreview", None)
-
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -225,6 +228,7 @@ def test_openreview_http_fallback_maps_authors(monkeypatch):
 
     papers = openreview_search_mod.fetch_openreview_papers(
         invitation="ICLR.cc/2025/Conference/-/Submission",
+        keyword="diffusion",
         limit=1,
     )
 
@@ -550,6 +554,74 @@ def test_ingest_skips_when_already_done(fake_store, fake_embed):
 
     assert result.already_done is True
     assert result.source == "cached"
+
+
+# A realistic multi-section paper body spanning far beyond abstract/method —
+# the sections the OLD pipeline dropped (results, conclusion) must be indexed.
+_LONG_PDF_TEXT = (
+    "Abstract\n\n" + ("We study a new method for widget alignment. " * 20) + "\n\n"
+    "Introduction\n\n" + ("Prior work on widgets is extensive and varied. " * 30) + "\n\n"
+    "Method\n\n" + ("Our approach uses a two-stage alignment pipeline. " * 30) + "\n\n"
+    "Results\n\n" + ("On the WidgetBench benchmark we reach 92.5 accuracy. " * 30) + "\n\n"
+    "Conclusion\n\n" + ("A key limitation is reliance on labelled data. " * 20) + "\n\n"
+)
+
+
+def _fake_pdf(monkeypatch, tmp_path, text):
+    """Make fetch_pdf return a temp path and parse_pdf return *text* as full text."""
+    from agent.tools.pdf_parser import PdfParseResult
+
+    pdf_file = tmp_path / "paper.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+    monkeypatch.setattr("agent.rag.ingest.fetch_pdf", lambda url, **kw: pdf_file)
+    monkeypatch.setattr(
+        "agent.rag.ingest.parse_pdf",
+        lambda path, **kw: PdfParseResult(
+            text=text, abstract="We study a new method for widget alignment.",
+            method="Our approach uses a two-stage alignment pipeline.",
+            experiments=None, table_mentions=[], figure_mentions=[],
+        ),
+    )
+
+
+def test_ingest_indexes_full_paper_not_just_head_sections(monkeypatch, tmp_path, fake_store, fake_embed):
+    _fake_pdf(monkeypatch, tmp_path, _LONG_PDF_TEXT)
+    req = IngestRequest(paper_id="P_full", title="Widget Alignment", pdf_url="https://x/y.pdf")
+    result = ingest_paper(req, cfg=CFG)
+
+    assert result.source == "pdf"
+    sections = {c["section"] for c in fake_store.papers["P_full"]}
+    # The tail sections that the old 3-section pipeline discarded are now indexed.
+    assert "results" in sections
+    assert "conclusion" in sections
+    # Full-body indexing yields far more chunks than the old abstract+method cap.
+    assert result.chunk_count >= 5
+
+
+def test_embed_texts_uses_subbatches_for_large_papers(monkeypatch):
+    """Reading the whole PDF can produce 100s of chunks; _embed_texts must split
+    them into provider-safe sub-batches rather than one giant request."""
+    import agent.rag.ingest as ingest_mod
+    from agent.core.model_registry import ModelSpec
+
+    monkeypatch.setattr(
+        ingest_mod, "resolve_embedding",
+        lambda cfg: ModelSpec(provider="openai", model="m", base_url=None),
+    )
+    batch_sizes: list[int] = []
+
+    def fake_embed_batch(*, texts, model, base_url):
+        batch_sizes.append(len(texts))
+        return [[0.0, 0.1] for _ in texts]
+
+    monkeypatch.setattr("agent.tools.openai_embeddings.embed_batch", fake_embed_batch)
+
+    texts = [f"chunk {i}" for i in range(150)]
+    out = ingest_mod._embed_texts(texts, CFG)
+
+    assert len(out) == 150                       # order/count preserved
+    assert len(batch_sizes) > 1                   # split into multiple requests
+    assert max(batch_sizes) <= ingest_mod._EMBED_BATCH_SIZE
 
 
 # ════════════════════════════════════════════════════════════════════════════

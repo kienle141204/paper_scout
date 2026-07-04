@@ -102,22 +102,40 @@ def make_chunks(
     experiments: str | None = None,
     full_text: str | None = None,
 ) -> list[Chunk]:
-    """Build chunks from parsed PDF sections; fall back to full_text if no sections found."""
-    named = [("abstract", abstract), ("method", method), ("experiments", experiments)]
-    available = [(name, text) for name, text in named if text]
+    """Build chunks for the RAG index.
 
-    if available:
+    Prefers the *full* PDF text so the whole paper is indexed — ``split_text``
+    assigns a section label per chunk from inline headings, so no section is
+    dropped. If ``abstract`` is supplied but not already present at the head of
+    ``full_text``, it is prepended as its own chunk. Falls back to the coarse
+    ``method``/``experiments`` sections only when no full text is available.
+    """
+    if full_text and full_text.strip():
         result: list[Chunk] = []
-        for section_name, text in available:
-            for c in split_text(text):
+
+        head = full_text[:2000].lower()
+        if abstract and abstract.strip() and abstract.strip()[:80].lower() not in head:
+            for c in split_text(abstract):
                 result.append(Chunk(
-                    text=c.text,
-                    section=section_name,
-                    chunk_index=len(result),
-                    token_count=c.token_count,
+                    text=c.text, section="abstract",
+                    chunk_index=len(result), token_count=c.token_count,
                 ))
+
+        for c in split_text(full_text):
+            result.append(Chunk(
+                text=c.text, section=c.section,
+                chunk_index=len(result), token_count=c.token_count,
+            ))
         return result
 
-    if full_text:
-        return split_text(full_text)
-    return []
+    # No full text — fall back to whatever coarse sections we have (incl. abstract).
+    named = [("abstract", abstract), ("method", method), ("experiments", experiments)]
+    available = [(name, text) for name, text in named if text]
+    result = []
+    for section_name, text in available:
+        for c in split_text(text):
+            result.append(Chunk(
+                text=c.text, section=section_name,
+                chunk_index=len(result), token_count=c.token_count,
+            ))
+    return result

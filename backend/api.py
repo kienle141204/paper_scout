@@ -983,25 +983,73 @@ def _is_safe_pdf_url(url: str) -> bool:
     return True
 
 
+@app.get("/api/papers/pdf/resolve")
+def api_papers_pdf_resolve(
+    url: str | None = None, title: str | None = None, paper_id: str | None = None
+) -> dict[str, Any]:
+    """Tell the frontend whether an embeddable PDF exists for this paper before it
+    commits to an <iframe>. Returns {"embeddable": bool, "url": <embeddable url|None>}.
+
+    A cached copy in Supabase Storage wins first (works even for OpenReview-only
+    papers with no open-access mirror). Otherwise, for OpenReview links (which
+    block framing + anonymous fetch) this triggers the arXiv/OA-by-title lookup;
+    the frontend embeds the returned url via the proxy, or shows the reading-view
+    fallback when embeddable is False."""
+    from agent.tools.pdf_fetcher import resolve_embeddable_url
+    from agent.tools import pdf_store
+
+    if paper_id and pdf_store.cached_pdf_url(paper_id):
+        return {"embeddable": True, "url": url or pdf_store.public_url(paper_id)}
+
+    resolved = resolve_embeddable_url(url, title)
+    return {"embeddable": resolved is not None, "url": resolved}
+
+
 @app.get("/api/papers/pdf/proxy")
-def api_papers_pdf_proxy(url: str) -> Any:
+def api_papers_pdf_proxy(url: str, title: str | None = None, paper_id: str | None = None) -> Any:
     """Stream a paper's PDF through our backend so the frontend <iframe> can
     embed it regardless of the source's X-Frame-Options/CORS policy — those
-    only restrict browsers, not our server-side fetch_pdf() call."""
-    from fastapi.responses import FileResponse
+    only restrict browsers, not our server-side fetch_pdf() call.
+
+    When *paper_id* is given, a Supabase-cached copy is redirected to (served from
+    the CDN, frames inline) and every fresh fetch is uploaded to the cache
+    fire-and-forget. *title* enables an arXiv/OA fallback when the primary source
+    (e.g. OpenReview) blocks anonymous PDF downloads."""
+    from fastapi.responses import FileResponse, RedirectResponse
     from starlette.background import BackgroundTask
     from agent.tools.pdf_fetcher import fetch_pdf
+    from agent.tools import pdf_store
+
+    # Cache hit → redirect to the public Supabase URL (inline + frameable).
+    if paper_id:
+        cached = pdf_store.cached_pdf_url(paper_id)
+        if cached:
+            return RedirectResponse(cached, status_code=307)
 
     if not _is_safe_pdf_url(url):
         raise HTTPException(status_code=400, detail="Invalid or disallowed url")
 
-    pdf_path = fetch_pdf(url)
+    pdf_path = fetch_pdf(url, title=title)
     if not pdf_path:
         raise HTTPException(status_code=404, detail="Could not fetch a valid PDF from this url")
 
+    # Populate the shared cache off the request path so the next open (any user)
+    # is a CDN redirect. Read bytes now; the temp file is deleted after streaming.
+    if paper_id:
+        try:
+            _bg_pool.submit(pdf_store.store_pdf_bytes, paper_id, pdf_path.read_bytes())
+        except Exception:
+            pass
+
+    # `inline` (not the FileResponse default `attachment`) tells the browser to
+    # render the PDF in the <iframe> instead of downloading it. X-Frame-Options
+    # is left unset so the same-origin iframe can frame it. `Content-Length` from
+    # FileResponse lets the built-in PDF viewer show a progress bar.
     return FileResponse(
         pdf_path,
         media_type="application/pdf",
+        content_disposition_type="inline",
+        filename="paper.pdf",
         background=BackgroundTask(lambda: pdf_path.unlink(missing_ok=True)),
     )
 

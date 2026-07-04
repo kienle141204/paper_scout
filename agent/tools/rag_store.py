@@ -31,7 +31,11 @@ def _get_client():
                 from supabase import create_client
                 _client_obj = create_client(url, key)
             except Exception:
+                # Transient failure (e.g. lib not yet importable, network blip at
+                # startup). Do NOT cache the None — leave _client_ready False so the
+                # next call retries instead of returning 503 forever until restart.
                 _client_obj = None
+                return None
         _client_ready = True
     return _client_obj
 

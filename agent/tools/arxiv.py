@@ -4,11 +4,30 @@ import re
 from typing import Any
 
 import requests
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..model import Paper
 
 
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
+
+
+def _arxiv_retriable(exc: Exception) -> bool:
+    if isinstance(exc, requests.HTTPError):
+        return exc.response is not None and exc.response.status_code in (429, 500, 503)
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout))
+
+
+@retry(
+    retry=retry_if_exception(_arxiv_retriable),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=2, min=3, max=30),
+    reraise=True,
+)
+def _arxiv_get(params: dict[str, Any]) -> requests.Response:
+    resp = requests.get(ARXIV_API_URL, params=params, timeout=60)
+    resp.raise_for_status()
+    return resp
 
 
 def search_arxiv(*, query: str, max_results: int = 25) -> list[Paper]:
@@ -20,8 +39,7 @@ def search_arxiv(*, query: str, max_results: int = 25) -> list[Paper]:
         "start": 0,
         "max_results": min(max(max_results, 1), 100),
     }
-    resp = requests.get(ARXIV_API_URL, params=params, timeout=60)
-    resp.raise_for_status()
+    resp = _arxiv_get(params)
     feed = feedparser.parse(resp.text)
 
     out: list[Paper] = []

@@ -26,7 +26,8 @@ class PdfParseResult:
         }
 
 
-def read_pdf_text(path: Path, *, max_pages: int | None = 8) -> str:
+def read_pdf_text(path: Path, *, max_pages: int | None = None) -> str:
+    """Extract text from a PDF. Reads every page by default (``max_pages=None``)."""
     from pypdf import PdfReader
 
     reader = PdfReader(str(path))
@@ -42,7 +43,7 @@ def read_pdf_text(path: Path, *, max_pages: int | None = 8) -> str:
     return "\n".join(chunks)
 
 
-def parse_pdf(path: Path, *, max_pages: int | None = 8) -> PdfParseResult:
+def parse_pdf(path: Path, *, max_pages: int | None = None) -> PdfParseResult:
     text = read_pdf_text(path, max_pages=max_pages)
     clean = re.sub(r"[ \t]+", " ", text)
     clean = re.sub(r"\n{3,}", "\n\n", clean)
@@ -87,4 +88,6 @@ def _extract_section(text: str, heads: list[str], *, stop_heads: list[str]) -> s
             break
     chunk = text[start:end].strip()
     chunk = re.sub(r"\n{3,}", "\n\n", chunk)
-    return chunk[:5000] if chunk else None
+    # These regex sections are now only lightweight metadata (the RAG index chunks
+    # the full text instead), so keep a generous cap just to bound pathological output.
+    return chunk[:20000] if chunk else None

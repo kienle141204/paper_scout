@@ -82,6 +82,11 @@ def fake_store(monkeypatch):
     # endpoint-level checks need their own patch.
     monkeypatch.setattr(backend_api, "rag_configured", store.is_configured)
     monkeypatch.setattr(backend_api, "rag_is_ingested", store.is_ingested)
+    # Keep the PDF cache offline in tests (no Supabase Storage network calls).
+    from agent.tools import pdf_store
+    monkeypatch.setattr(pdf_store, "download_pdf", lambda paper_id: None)
+    monkeypatch.setattr(pdf_store, "store_pdf_bytes", lambda paper_id, data: True)
+    monkeypatch.setattr(pdf_store, "cached_pdf_url", lambda paper_id: None)
     return store
 
 

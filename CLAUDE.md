@@ -168,12 +168,20 @@ LLM trong `/api/chat` trả về JSON `{action: "search"|"clarify"|"filter"|"don
   `library.sqlite3` (bảng `papers` + `profile`). Save paper hoạt động ngay, không cần login.
 
 ### Shared paper DB (Supabase)
-- DB paper **dùng chung** cho mọi người clone repo. `SUPABASE_URL` + `SUPABASE_ANON_KEY` được nhúng
-  sẵn ở `agent/tools/shared_supabase.py` (env var cùng tên sẽ ghi đè → dùng Supabase riêng).
+- DB paper **dùng chung** cho mọi người clone repo. `SUPABASE_URL` + **publishable key** (`sb_publishable_…`,
+  thay anon key cũ) được nhúng sẵn ở `agent/tools/shared_supabase.py` (env `SUPABASE_URL` /
+  `SUPABASE_PUBLISHABLE_KEY` ghi đè → dùng Supabase riêng). **Secret key (`sb_secret_…`) KHÔNG BAO GIỜ
+  commit** — chỉ đọc từ env qua `get_supabase_secret_key()`, dùng bởi `scripts/setup_supabase.py` (tạo
+  bucket) một lần. Key mới `sb_…` cần `supabase-py>=2.16` (bản 2.15 từ chối định dạng này).
 - `paper_cache` table: `paper_id` (PK), `abstract_vi`, `analysis_html`, metadata columns. Cache write
   là **fire-and-forget** qua `_bg_pool` (ThreadPoolExecutor 4 workers) — không block HTTP response.
-- `paper_chunks` table: RAG vector store. Cả `paper_cache.py` và `rag_store.py` đều dùng anon key
-  qua `shared_supabase.py`. Các bảng đang tắt RLS (xem cảnh báo trong README).
+- `paper_chunks` table: RAG vector store.
+- `paper_pdfs` **storage bucket** (public): cache file PDF theo `paper_id` (`agent/tools/pdf_store.py`).
+  Endpoint `/pdf/proxy?paper_id=…` redirect 307 sang public URL khi cache hit (frame inline từ CDN),
+  miss thì `fetch_pdf` → stream inline + upload nền. `rag/ingest.py` cũng đọc/ghi cache này nên Reader
+  và ingest **dùng chung 1 lần tải**. `pdf_cache.py`/`rag_store.py`/`pdf_store.py` đều qua `shared_supabase.py`.
+- Bảng tắt RLS; bucket có policy anon read/write. Setup project mới: chạy `supabase_migration.sql`
+  (SQL Editor) rồi `python scripts/setup_supabase.py` (tạo bucket). Xem cảnh báo RLS trong README.
 
 ### Search pipeline — Search Agent (`agent/search/`)
 `run_search()` (`agent/search/agent.py`) chạy loop: rewrite query → tìm đa nguồn → chấm điểm → nếu chưa đủ paper "tốt" thì lặp lại tới `max_iterations` (mặc định 3) hoặc tới khi diminishing-returns. Trong mỗi vòng:

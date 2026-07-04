@@ -51,15 +51,25 @@ class IngestResult:
         }
 
 
+# Sub-batch size for embedding. Reading the whole PDF can produce 100s of chunks;
+# sending them all in one request risks exceeding the provider's per-request limits.
+_EMBED_BATCH_SIZE = 64
+
+
 def _embed_texts(texts: list[str], cfg: Config) -> list[list[float]]:
     spec = resolve_embedding(cfg)
     if spec.provider == "openai":
         from agent.tools.openai_embeddings import embed_batch
-        return embed_batch(texts=texts, model=spec.model, base_url=spec.base_url)
+        out: list[list[float]] = []
+        for i in range(0, len(texts), _EMBED_BATCH_SIZE):
+            batch = texts[i : i + _EMBED_BATCH_SIZE]
+            out.extend(embed_batch(texts=batch, model=spec.model, base_url=spec.base_url))
+        return out
     from agent.tools.gemini_embeddings import embed as gemini_embed
     from concurrent.futures import ThreadPoolExecutor
     base_url = spec.base_url or "https://generativelanguage.googleapis.com/v1beta"
-    with ThreadPoolExecutor(max_workers=min(len(texts), 8)) as pool:
+    # Gemini embeds one text per call; cap the pool so huge papers don't spawn 100s of threads.
+    with ThreadPoolExecutor(max_workers=min(max(len(texts), 1), 8)) as pool:
         return list(pool.map(lambda t: gemini_embed(text=t, model=spec.model, base_url=base_url), texts))
 
 
@@ -76,22 +86,40 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
     if not req.force and rag_store.is_ingested(req.paper_id):
         return IngestResult(paper_id=req.paper_id, already_done=True, chunk_count=-1, source="cached")
 
-    # 1. Try to fetch + parse PDF
+    # 1. Try to fetch + parse PDF. Prefer the shared Supabase cache (one download
+    #    serves both the Reader iframe and this ingest); fall back to a live fetch
+    #    and populate the cache so the next open is instant.
+    from agent.tools import pdf_store
+    import tempfile
+    from pathlib import Path
+
     source = "abstract"
     chunks: list[Chunk] = []
     pdf_path = None
     try:
-        if req.pdf_url or req.url:
-            pdf_path = fetch_pdf(req.pdf_url or req.url)
+        cached = pdf_store.download_pdf(req.paper_id)
+        if cached:
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+            tmp.write(cached)
+            tmp.close()
+            pdf_path = Path(tmp.name)
+        elif req.pdf_url or req.url:
+            pdf_path = fetch_pdf(req.pdf_url or req.url, title=req.title)
+            if pdf_path:
+                try:
+                    pdf_store.store_pdf_bytes(req.paper_id, pdf_path.read_bytes())
+                except Exception:
+                    pass
         if pdf_path:
-            parsed = parse_pdf(pdf_path)
+            parsed = parse_pdf(pdf_path)  # max_pages=None → reads every page
+            # Index the full paper text (all pages, all sections). split_text tags
+            # each chunk with its section, so nothing beyond abstract/method is lost.
             chunks = make_chunks(
+                full_text=parsed.text,
                 abstract=parsed.abstract or req.abstract,
-                method=parsed.method,
-                experiments=parsed.experiments,
-                full_text=parsed.text if not (parsed.abstract or parsed.method) else None,
             )
-            source = "pdf"
+            if chunks:
+                source = "pdf"
     except Exception:
         chunks = []
     finally:

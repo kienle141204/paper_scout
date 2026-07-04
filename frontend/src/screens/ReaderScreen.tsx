@@ -1,11 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Icon, ConfTag, SaveBtn } from '../components/atoms'
 import RichText from '../components/RichText'
 import { usePaperRagChat } from '../hooks/usePaperRagChat'
 import { ReasoningBlock, VerificationBadge, AnswerMeta, MessageContent } from '../components/rag/MessageParts'
 import type { Paper } from '../types/paper'
 import { useLanguage } from '../contexts/LanguageContext'
-import { pdfProxyUrl } from '../services/api'
+import { pdfProxyUrl, resolvePdfUrl } from '../services/api'
 
 interface Props {
   paper: Paper
@@ -33,6 +33,20 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack }: Pro
 
   const messagesRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // Resolve an embeddable PDF up-front: undefined = resolving, null = none
+  // (show reading view), string = embed via proxy. OpenReview blocks framing +
+  // anonymous fetch, so the backend looks up an arXiv copy by title.
+  const [embedUrl, setEmbedUrl] = useState<string | null | undefined>(undefined)
+  useEffect(() => {
+    let cancelled = false
+    setEmbedUrl(undefined)
+    const src = paper.pdfUrl || paper.url
+    if (!src) { setEmbedUrl(null); return }
+    resolvePdfUrl(src, paper.titleEn, paper.id).then((u) => { if (!cancelled) setEmbedUrl(u) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paper.id])
 
   // Start reading the paper as soon as the Reader screen opens.
   useEffect(() => {
@@ -82,22 +96,27 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack }: Pro
       <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'minmax(0, 1.05fr) minmax(440px, 0.95fr)', minHeight: 0 }}>
         {/* left: PDF */}
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, borderRight: '1px solid var(--border)', background: 'var(--surface-3)' }}>
-          {paper.pdfUrl ? (
+          {embedUrl ? (
             <>
               <div style={{ flex: 'none', height: 42, borderBottom: '1px solid var(--border)', background: 'var(--surface)', display: 'flex', alignItems: 'center', gap: 10, padding: '0 14px' }}>
                 <Icon name="doc" size={14} style={{ color: 'var(--ink-3)' }} />
                 <span className="mono" style={{ fontSize: 11.5, color: 'var(--ink-2)' }}>paper.pdf</span>
                 <div style={{ flex: 1 }} />
-                <a href={paper.pdfUrl} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm" title={dr.viewSource}>
+                <a href={paper.pdfUrl || paper.url || embedUrl} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm" title={dr.viewSource}>
                   <Icon name="ext" size={14} />
                 </a>
               </div>
               <iframe
-                src={pdfProxyUrl(paper.pdfUrl)}
+                src={pdfProxyUrl(embedUrl, paper.titleEn, paper.id)}
                 title={paper.titleEn}
                 style={{ flex: 1, border: 0, background: 'white' }}
               />
             </>
+          ) : embedUrl === undefined ? (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--ink-3)' }}>
+              <Icon name="loader" size={22} style={{ animation: 'spin 1s linear infinite' }} />
+              <span style={{ fontSize: 12.5 }}>Đang tải PDF…</span>
+            </div>
           ) : (
             <div style={{ flex: 1, overflowY: 'auto', padding: '32px 28px' }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 18, padding: '12px 14px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r)' }}>
@@ -105,8 +124,8 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack }: Pro
                 <div>
                   <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--ink)', marginBottom: 3 }}>{dr.noPdfTitle}</div>
                   <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.5 }}>{dr.noPdfDesc}</div>
-                  {paper.url && (
-                    <a href={paper.url} target="_blank" rel="noopener noreferrer" className="btn btn-outline btn-sm" style={{ marginTop: 10, fontSize: 12 }}>
+                  {(paper.pdfUrl || paper.url) && (
+                    <a href={paper.pdfUrl || paper.url} target="_blank" rel="noopener noreferrer" className="btn btn-outline btn-sm" style={{ marginTop: 10, fontSize: 12 }}>
                       <Icon name="ext" size={13} /> {dr.viewSource}
                     </a>
                   )}

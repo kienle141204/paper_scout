@@ -7,8 +7,27 @@ const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
 // Routes a paper's PDF through our backend so <iframe> embedding works
 // regardless of the source's X-Frame-Options/CORS policy (e.g. OpenReview
 // blocks cross-origin framing; arXiv doesn't — proxying makes both uniform).
-export function pdfProxyUrl(pdfUrl: string): string {
-  return `${BASE}/api/papers/pdf/proxy?url=${encodeURIComponent(pdfUrl)}`
+export function pdfProxyUrl(pdfUrl: string, title?: string, paperId?: string): string {
+  const t = title ? `&title=${encodeURIComponent(title)}` : ''
+  const p = paperId ? `&paper_id=${encodeURIComponent(paperId)}` : ''
+  return `${BASE}/api/papers/pdf/proxy?url=${encodeURIComponent(pdfUrl)}${t}${p}`
+}
+
+// Ask the backend whether an embeddable PDF exists (OpenReview blocks framing +
+// anonymous fetch, so it resolves an arXiv copy by title). Returns the url to
+// embed via pdfProxyUrl, or null when the Reader should fall back to the
+// reading view instead of showing a broken iframe.
+export async function resolvePdfUrl(pdfUrl: string, title?: string, paperId?: string): Promise<string | null> {
+  const t = title ? `&title=${encodeURIComponent(title)}` : ''
+  const p = paperId ? `&paper_id=${encodeURIComponent(paperId)}` : ''
+  try {
+    const r = await fetch(`${BASE}/api/papers/pdf/resolve?url=${encodeURIComponent(pdfUrl)}${t}${p}`)
+    if (!r.ok) return null
+    const data = await r.json()
+    return data.embeddable ? (data.url as string) : null
+  } catch {
+    return null
+  }
 }
 
 // ── Backend shapes ───────────────────────────────

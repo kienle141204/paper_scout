@@ -49,7 +49,10 @@ export const COVERAGE_STYLE = {
 
 export function ReasoningBlock({ plan }: { plan: RagPlan }) {
   const [open, setOpen] = useState(false)
-  if (!plan.sub_questions.length && !plan.sections_searched.length) return null
+  // Plan shape varies by lane (skill/fast/deliberate) — arrays may be absent.
+  const subQuestions = plan?.sub_questions ?? []
+  const sectionsSearched = plan?.sections_searched ?? []
+  if (!subQuestions.length && !sectionsSearched.length) return null
   return (
     <div style={{ marginBottom: 8 }}>
       <button
@@ -63,9 +66,9 @@ export function ReasoningBlock({ plan }: { plan: RagPlan }) {
       >
         <span style={{ fontSize: 9 }}>{open ? '▼' : '▶'}</span>
         Phân tích câu hỏi
-        {plan.sub_questions.length > 0 && (
+        {subQuestions.length > 0 && (
           <span style={{ fontWeight: 400, marginLeft: 4 }}>
-            · {plan.sub_questions.length} khía cạnh
+            · {subQuestions.length} khía cạnh
           </span>
         )}
       </button>
@@ -80,20 +83,20 @@ export function ReasoningBlock({ plan }: { plan: RagPlan }) {
             fontSize: 11.5,
           }}
         >
-          {plan.sub_questions.length > 0 && (
+          {subQuestions.length > 0 && (
             <>
               <div style={{ fontWeight: 700, color: 'var(--ink-2)', marginBottom: 4, fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.05em' }}>Khía cạnh</div>
               <ul style={{ margin: '0 0 6px', paddingLeft: 16 }}>
-                {plan.sub_questions.map((q, i) => (
+                {subQuestions.map((q, i) => (
                   <li key={i} style={{ color: 'var(--ink-2)', lineHeight: 1.6 }}>{q}</li>
                 ))}
               </ul>
             </>
           )}
-          {plan.sections_searched.length > 0 && (
+          {sectionsSearched.length > 0 && (
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Tìm trong:</span>
-              {plan.sections_searched.map((s) => (
+              {sectionsSearched.map((s) => (
                 <span key={s} style={{ fontSize: 10.5, padding: '1px 6px', borderRadius: 4, background: 'var(--accent)', color: '#fff' }}>{s}</span>
               ))}
             </div>
@@ -123,9 +126,9 @@ export function VerificationBadge({ v }: { v: RagVerification }) {
       <span style={{ fontSize: 13 }}>{isHigh ? '⚠️' : '💡'}</span>
       <div>
         <strong style={{ fontSize: 11 }}>Rủi ro hallucination: {v.hallucination_risk}</strong>
-        {v.issues.length > 0 && (
+        {(v.issues?.length ?? 0) > 0 && (
           <ul style={{ margin: '3px 0 0', paddingLeft: 14 }}>
-            {v.issues.map((issue, i) => <li key={i}>{issue}</li>)}
+            {v.issues!.map((issue, i) => <li key={i}>{issue}</li>)}
           </ul>
         )}
       </div>
@@ -164,11 +167,11 @@ export function AnswerMeta({
 
 export function MessageContent({
   content,
-  citations,
-}: { content: string; citations: RagCitation[] }) {
+  citations = [],
+}: { content: string; citations?: RagCitation[] }) {
   const [activeCite, setActiveCite] = useState<number | null>(null)
 
-  const parts = content.split(/(\[\d+\])/g)
+  const parts = (content ?? '').split(/(\[\d+\])/g)
   const activeCitation = citations.find((c) => c.ref === activeCite)
 
   return (
