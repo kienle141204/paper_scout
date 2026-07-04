@@ -5,7 +5,6 @@ import PaperAgentBubble from '../components/PaperAgentBubble'
 import { viewPaper, analyzePaper } from '../services/api'
 import type { Paper, Conference } from '../types/paper'
 import { useLanguage } from '../contexts/LanguageContext'
-import { useAuth } from '../contexts/AuthContext'
 
 interface Props {
   paper: Paper
@@ -16,12 +15,10 @@ interface Props {
   onBack: () => void
   onOpen: (id: string) => void
   onOpenReader: (id: string) => void
-  onNeedAuth: () => void
 }
 
-export default function DetailScreen({ paper, saved, related, conferences, onToggleSave, onBack, onOpen, onOpenReader, onNeedAuth }: Props) {
+export default function DetailScreen({ paper, saved, related, conferences, onToggleSave, onBack, onOpen, onOpenReader }: Props) {
   const { lang: langPref, t } = useLanguage()
-  const { isLoggedIn } = useAuth()
   const dt = t.detail
 
   const [lang, setLang] = useState<'vi' | 'en'>(langPref)
@@ -151,10 +148,6 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
   }
 
   const handleToggleSave = () => {
-    if (!isLoggedIn) {
-      onNeedAuth()
-      return
-    }
     onToggleSave()
   }
 
@@ -204,7 +197,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
             {/* Authors */}
             <div className="flex items-center gap-2 mb-6" style={{ color: 'var(--ink-2)', fontSize: 14.5 }}>
               <Icon name="user" size={15} style={{ color: 'var(--ink-3)' }} />
-              {paper.authors.join(' · ')}
+              {paper.authors.filter(Boolean).join(' · ') || 'Không rõ tác giả'}
             </div>
 
             {/* Why relevant */}
@@ -490,7 +483,7 @@ export default function DetailScreen({ paper, saved, related, conferences, onTog
                   onClick={handleToggleSave}
                 >
                   <Icon name="bookmark" size={16} style={{ fill: saved ? 'currentColor' : 'none' }} />
-                  {!isLoggedIn ? dt.loginToSave : saved ? dt.saved : dt.save}
+                  {saved ? dt.saved : dt.save}
                 </button>
 
                 <button

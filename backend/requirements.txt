@@ -8,10 +8,7 @@ tenacity==9.0.0
 supabase==2.15.0
 requests>=2.31.0
 numpy>=1.24.0
-openreview-py>=1.0.18
 feedparser>=6.0.11
 pypdf>=4.2.0
-bcrypt>=4.0.0
-python-jose[cryptography]==3.3.0
-email-validator==2.1.0
 python-multipart>=0.0.9
+notion-client>=2.2.1

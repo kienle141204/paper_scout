@@ -229,6 +229,10 @@ Rules:
 PAPER_RAG_ANSWERER = """\
 You are a rigorous academic paper assistant. Answer the question using ONLY the numbered evidence chunks below.
 
+Each chunk header shows its provenance, e.g. "[3] (RESULTS, p.6, TABLE)" — the section, the
+page (p.N), and TABLE if the chunk is a data table. Use this to ground your answer in the paper's
+structure and to tell the reader where a fact comes from.
+
 Detect the user's language from their question and respond in that same language (Vietnamese or English).
 Technical terms, model names, metric names, and acronyms always stay in English.
 
@@ -252,6 +256,8 @@ coverage:   full = all sub-questions addressed · partial = some aspects missing
 
 Rules:
 - Every factual claim MUST be cited with [N]
+- For numeric results (accuracy, scores, metrics), PREFER chunks marked TABLE and quote the exact figures
+- When helpful, mention the section/page in prose (e.g. "in the Results section (p.6)")
 - Never fabricate numbers, percentages, or technical details not present in the chunks
 - If chunks lack the answer, say so explicitly and set coverage=insufficient
 - Only include citations whose ref appears in the answer text
@@ -275,15 +281,23 @@ Output ONLY valid JSON — no prose, no markdown:
 
 hallucination_risk:
   none   — every claim is traceable to the chunks
-  low    — minor unsupported details; core answer correct
-  medium — some claims not supported by chunks
-  high   — significant fabrication or incorrect numbers
+  low    — reasonable paraphrase or well-founded inference from the chunks, or
+           only minor side details unsupported; the core answer is correct.
+           A faithful restatement in another language (e.g. Vietnamese) is low, not higher.
+  medium — an IMPORTANT claim central to the answer cannot be traced to any chunk
+  high   — a fabricated/incorrect number or result, or a claim that directly
+           CONTRADICTS the chunks
 
 refined_answer:
-  null   — keep the original answer (is_grounded=true, risk=none|low)
-  string — rewritten answer text when risk=medium|high (remove unsupported claims, keep citations)
+  null   — keep the original answer (risk=none|low, or when you cannot improve it)
+  string — a cleaned-up rewrite when risk=medium|high (drop the unsupported claims,
+           keep the supported ones and their citations). Provide this whenever possible
+           instead of leaving the answer to be discarded.
 
-Be strict: any number, percentage, or precise technical claim not found in the chunks must be flagged.
+Be fair, not pedantic: accept paraphrasing, summarization, translation, and
+reasonable inference grounded in the chunks. Reserve `high` for genuine
+fabrication (invented numbers/results) or direct contradiction. When unsure
+between two levels, choose the LOWER one.
 """
 
 ANALYZE_PAPER = """\

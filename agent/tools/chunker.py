@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from agent.tools.mineru_parser import Block, canonical_section
+
 
 @dataclass
 class Chunk:
@@ -10,6 +12,8 @@ class Chunk:
     section: str
     chunk_index: int
     token_count: int
+    page: int | None = None
+    block_type: str = "text"
 
 
 _SECTION_HEAD = re.compile(
@@ -102,22 +106,142 @@ def make_chunks(
     experiments: str | None = None,
     full_text: str | None = None,
 ) -> list[Chunk]:
-    """Build chunks from parsed PDF sections; fall back to full_text if no sections found."""
-    named = [("abstract", abstract), ("method", method), ("experiments", experiments)]
-    available = [(name, text) for name, text in named if text]
+    """Build chunks for the RAG index.
 
-    if available:
+    Prefers the *full* PDF text so the whole paper is indexed — ``split_text``
+    assigns a section label per chunk from inline headings, so no section is
+    dropped. If ``abstract`` is supplied but not already present at the head of
+    ``full_text``, it is prepended as its own chunk. Falls back to the coarse
+    ``method``/``experiments`` sections only when no full text is available.
+    """
+    if full_text and full_text.strip():
         result: list[Chunk] = []
-        for section_name, text in available:
-            for c in split_text(text):
+
+        head = full_text[:2000].lower()
+        if abstract and abstract.strip() and abstract.strip()[:80].lower() not in head:
+            for c in split_text(abstract):
                 result.append(Chunk(
-                    text=c.text,
-                    section=section_name,
-                    chunk_index=len(result),
-                    token_count=c.token_count,
+                    text=c.text, section="abstract",
+                    chunk_index=len(result), token_count=c.token_count,
                 ))
+
+        for c in split_text(full_text):
+            result.append(Chunk(
+                text=c.text, section=c.section,
+                chunk_index=len(result), token_count=c.token_count,
+            ))
         return result
 
-    if full_text:
-        return split_text(full_text)
-    return []
+    # No full text — fall back to whatever coarse sections we have (incl. abstract).
+    named = [("abstract", abstract), ("method", method), ("experiments", experiments)]
+    available = [(name, text) for name, text in named if text]
+    result = []
+    for section_name, text in available:
+        for c in split_text(text):
+            result.append(Chunk(
+                text=c.text, section=section_name,
+                chunk_index=len(result), token_count=c.token_count,
+            ))
+    return result
+
+
+def _html_table_to_text(html: str) -> str:
+    """Flatten an HTML table into a readable pipe-separated grid for embedding/LLM."""
+    s = re.sub(r"(?i)</t[dh]>", " | ", html)
+    s = re.sub(r"(?i)</tr>", "\n", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = re.sub(r"[ \t]*\|[ \t]*\n", "\n", s)
+    s = re.sub(r"\n{2,}", "\n", s)
+    return s.strip()
+
+
+def make_chunks_from_blocks(
+    blocks: list[Block],
+    *,
+    abstract: str | None = None,
+    chunk_tokens: int = 400,
+) -> list[Chunk]:
+    """Structure-aware chunking over MinerU blocks.
+
+    - Groups body text under the nearest canonical section heading (see
+      ``canonical_section``), splitting long runs to ~``chunk_tokens`` with overlap.
+    - Emits each table as a single atomic chunk (caption + flattened grid) tagged
+      ``block_type="table"`` so numeric results stay intact for retrieval.
+    - Inlines equations (LaTeX) into the surrounding text run.
+    - Each chunk carries the page it starts on for page-level citations.
+    """
+    result: list[Chunk] = []
+    idx = 0
+    section = "body"
+    buf: list[str] = []
+    buf_page: int | None = None
+
+    def flush_text() -> None:
+        nonlocal idx, buf, buf_page
+        if not buf:
+            return
+        joined = "\n\n".join(buf)
+        for c in split_text(joined, chunk_tokens=chunk_tokens):
+            result.append(Chunk(
+                text=c.text, section=section, chunk_index=idx,
+                token_count=c.token_count, page=buf_page, block_type="text",
+            ))
+            idx += 1
+        buf = []
+        buf_page = None
+
+    def push(text: str, page: int) -> None:
+        nonlocal buf_page
+        if buf_page is None:
+            buf_page = page
+        buf.append(text)
+
+    for b in blocks:
+        if b.type == "title":
+            sec = canonical_section(b.text)
+            if sec:
+                flush_text()
+                section = sec
+            elif b.text.strip():  # sub-heading — keep as text lead-in
+                push(b.text.strip(), b.page)
+            continue
+
+        if b.type == "table":
+            flush_text()
+            body = _html_table_to_text(b.table_html) if b.table_html else b.text
+            parts = [p for p in (b.caption, body) if p and p.strip()]
+            text = "\n".join(parts).strip()
+            if text:
+                result.append(Chunk(
+                    text=text, section=section, chunk_index=idx,
+                    token_count=_tok(text), page=b.page, block_type="table",
+                ))
+                idx += 1
+            continue
+
+        if b.type == "equation":
+            eq = (b.latex or b.text or "").strip()
+            if eq:
+                push(f"$$ {eq} $$", b.page)
+            continue
+
+        # text / image caption
+        if b.text.strip():
+            push(b.text.strip(), b.page)
+
+    flush_text()
+
+    # Prepend abstract if MinerU produced content but no abstract section. When there
+    # are no content blocks at all, return empty so the caller uses its abstract-only
+    # fallback (and labels the source correctly).
+    if result and abstract and abstract.strip() and not any(c.section == "abstract" for c in result):
+        prepend = [
+            Chunk(text=c.text, section="abstract", chunk_index=0,
+                  token_count=c.token_count, page=0, block_type="text")
+            for c in split_text(abstract)
+        ]
+        result = prepend + result
+
+    for i, c in enumerate(result):
+        c.chunk_index = i
+    return result

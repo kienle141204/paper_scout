@@ -32,13 +32,20 @@ Thumbs.db
 
 # Logs
 *.log
-logs/
+/logs/
+
+# Local config & personal data (single-user local tool)
+config.toml
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 
 # Env files
 .env
 .env.local
 .env.production
 backend/.env
+frontend/.env
 
 .claude/
 .agents/

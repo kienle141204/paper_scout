@@ -3,15 +3,15 @@ from __future__ import annotations
 import logging
 import re
 import time
+from types import SimpleNamespace
 from typing import Any
 
-import openreview
+import requests
 
 from ..model import Paper
 
 logger = logging.getLogger(__name__)
 
-_INTER_BATCH_DELAY = 1.0   # seconds between batch requests (stay under 60 req/min)
 _RATE_LIMIT_WAIT   = 10    # seconds to wait on 429 before retrying
 _MAX_RETRIES       = 3
 
@@ -26,8 +26,6 @@ OPENREVIEW_VENUES: dict[str, str] = {
     "emnlp":   "EMNLP",
 }
 
-_BATCH_SIZE = 500  # số note tải mỗi lần từ OpenReview khi cần filter
-
 
 def _val(field: Any) -> Any:
     """API v2 trả content dạng {'value': ...}, hàm này extract giá trị thực."""
@@ -36,18 +34,49 @@ def _val(field: Any) -> Any:
     return field
 
 
-def _get_client() -> openreview.api.OpenReviewClient:
-    return openreview.api.OpenReviewClient(baseurl=OPENREVIEW_BASE_URL)
+def _search_notes_http(term: str, venueid: str | None, *, limit: int, offset: int) -> list[Any]:
+    """Gọi endpoint `/notes/search` (còn cho phép anonymous — khác `/notes` đã bị
+    chặn bằng challenge verification). Trả về list SimpleNamespace giống get_notes.
+
+    - `term`: từ khóa (bắt buộc, endpoint 400 nếu rỗng) — server-side relevance match.
+    - `venueid`: ví dụ 'ICLR.cc/2024/Conference' để giới hạn về đúng venue+năm.
+      venueid dạng '.../Conference' chỉ chứa paper đã được nhận (accepted).
+    """
+    params: dict[str, Any] = {
+        "term": term,
+        "content": "all",
+        "group": "all",
+        "source": "all",
+        "limit": limit,
+        "offset": offset,
+    }
+    if venueid:
+        params["venueid"] = venueid
+    resp = requests.get(f"{OPENREVIEW_BASE_URL}/notes/search", params=params, timeout=30)
+    resp.raise_for_status()
+    payload = resp.json()
+    notes = payload.get("notes") or payload.get("results") or []
+    return [
+        SimpleNamespace(
+            id=note.get("id"),
+            content=note.get("content") or {},
+            invitation=note.get("invitation"),
+            invitations=note.get("invitations"),
+        )
+        for note in notes
+        if isinstance(note, dict)
+    ]
 
 
-def _get_notes_with_retry(client: openreview.api.OpenReviewClient, **kwargs: Any) -> list[Any]:
-    """Wrapper around client.get_notes() với retry khi bị rate-limit (HTTP 429)."""
+def _search_with_retry(term: str, venueid: str | None, *, limit: int, offset: int) -> list[Any]:
+    """Wrapper around `_search_notes_http` với retry khi bị rate-limit (HTTP 429)."""
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            return client.get_notes(**kwargs)
+            return _search_notes_http(term, venueid, limit=limit, offset=offset)
         except Exception as exc:
             msg = str(exc)
-            if "429" in msg or "RateLimitError" in msg or "Too many requests" in msg:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code == 429 or "429" in msg or "RateLimitError" in msg or "Too many requests" in msg:
                 # Cố trích thời gian chờ từ message, nếu không lấy được dùng default
                 wait = _RATE_LIMIT_WAIT
                 m = re.search(r"try again in (\d+) second", msg, re.IGNORECASE)
@@ -117,13 +146,13 @@ def _is_accepted(note: Any) -> bool:
     return not rejected and not submitted_only
 
 
-def _matches_keyword(note: Any, q: str) -> bool:
-    content = getattr(note, "content", {}) or {}
-    title_text = (_val(content.get("title")) or "").lower()
-    abstract_text = (_val(content.get("abstract")) or "").lower()
-    kw_list = _val(content.get("keywords")) or []
-    kw_text = " ".join(kw_list).lower() if isinstance(kw_list, list) else ""
-    return q in title_text or q in abstract_text or q in kw_text
+def _venueid_from_invitation(invitation: str) -> str:
+    """'ICLR.cc/2024/Conference/-/Submission' → 'ICLR.cc/2024/Conference'.
+
+    venueid dạng '.../Conference' là venueid của các paper đã accepted trên
+    OpenReview API v2 — đúng cái ta cần để lọc theo venue+năm qua `/notes/search`.
+    """
+    return invitation.split("/-/", 1)[0]
 
 
 def fetch_openreview_papers(
@@ -135,64 +164,45 @@ def fetch_openreview_papers(
     offset: int = 0,
 ) -> list[Paper]:
     """
-    Lấy paper từ OpenReview với hỗ trợ phân trang (offset/limit).
+    Lấy paper từ OpenReview qua endpoint `/notes/search`, có phân trang (offset/limit).
+
+    Endpoint `/notes` (liệt kê theo invitation) hiện bị OpenReview chặn bằng
+    challenge verification (HTTP 403) với request anonymous, nên ta chuyển sang
+    `/notes/search` — vẫn cho phép anonymous và tự lọc relevance theo `term`.
+
+    Vì `/notes/search` bắt buộc có `term`, hàm cần `keyword` để hoạt động; nếu
+    thiếu keyword sẽ trả về [] (không còn cách liệt kê toàn bộ khi ẩn danh).
 
     Trả về tối đa limit+1 paper — nếu len(result) > limit thì còn trang tiếp theo.
 
     Args:
-        invitation: ví dụ 'ICLR.cc/2025/Conference/-/Submission'
-        keyword: lọc theo từ khóa trong title/abstract/keywords
-        accepted_only: chỉ lấy paper được chấp nhận
+        invitation: ví dụ 'ICLR.cc/2025/Conference/-/Submission' (dùng để suy ra venueid)
+        keyword: từ khóa tìm kiếm (bắt buộc với endpoint search)
+        accepted_only: giữ lại tham số cho tương thích; venueid '.../Conference'
+            vốn chỉ chứa paper đã accepted nên kết quả mặc định đã là accepted.
         limit: số paper tối đa cần trả về (tải limit+1 để phát hiện has_more)
-        offset: bỏ qua bao nhiêu paper (đã lọc) trước khi bắt đầu thu thập
+        offset: bỏ qua bao nhiêu paper trước khi bắt đầu thu thập
     """
-    client = _get_client()
-    q = keyword.lower().strip() if keyword else None
-    need_filter = bool(q) or accepted_only
+    q = keyword.strip() if keyword else ""
+    if not q:
+        logger.warning(
+            "OpenReview `/notes/search` yêu cầu keyword; bỏ qua invitation=%s vì không có keyword.",
+            invitation,
+        )
+        return []
 
-    # Trường hợp không cần lọc: dùng native offset/limit của OpenReview — cực nhanh
-    if not need_filter:
-        notes = _get_notes_with_retry(client, invitation=invitation, offset=offset, limit=limit + 1)
-        out: list[Paper] = []
-        for note in notes:
-            p = _note_to_paper(note)
-            if p:
-                out.append(p)
-        return out
+    venueid = _venueid_from_invitation(invitation)
+    notes = _search_with_retry(q, venueid, limit=limit + 1, offset=offset)
 
-    # Trường hợp cần lọc: scan theo batch, bỏ qua offset kết quả phù hợp đầu tiên
-    skipped = 0
     collected: list[Paper] = []
-    or_offset = 0
-
-    while True:
-        notes = _get_notes_with_retry(client, invitation=invitation, offset=or_offset, limit=_BATCH_SIZE)
-        if not notes:
+    for note in notes:
+        if accepted_only and not _is_accepted(note):
+            continue
+        p = _note_to_paper(note)
+        if p:
+            collected.append(p)
+        if len(collected) >= limit + 1:
             break
-
-        for note in notes:
-            if accepted_only and not _is_accepted(note):
-                continue
-            if q and not _matches_keyword(note, q):
-                continue
-
-            if skipped < offset:
-                skipped += 1
-                continue
-
-            p = _note_to_paper(note)
-            if p:
-                collected.append(p)
-
-            if len(collected) >= limit + 1:
-                return collected
-
-        if len(notes) < _BATCH_SIZE:
-            break  # hết dữ liệu từ server
-
-        or_offset += _BATCH_SIZE
-        time.sleep(_INTER_BATCH_DELAY)  # tránh vượt 60 req/min
-
     return collected
 
 

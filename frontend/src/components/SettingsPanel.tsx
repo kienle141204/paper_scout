@@ -1,17 +1,13 @@
 import { useRef, useEffect } from 'react'
 import { Icon } from './atoms'
 import { useLanguage } from '../contexts/LanguageContext'
-import { useAuth } from '../contexts/AuthContext'
-import { updateLanguagePref } from '../services/api'
 
 interface Props {
   onClose: () => void
-  onOpenAuth: () => void
 }
 
-export default function SettingsPanel({ onClose, onOpenAuth }: Props) {
+export default function SettingsPanel({ onClose }: Props) {
   const { lang, setLang, t } = useLanguage()
-  const auth = useAuth()
   const panelRef = useRef<HTMLDivElement>(null)
   const st = t.settings
 
@@ -23,11 +19,8 @@ export default function SettingsPanel({ onClose, onOpenAuth }: Props) {
     return () => document.removeEventListener('mousedown', handler)
   }, [onClose])
 
-  const handleLangChange = async (newLang: 'en' | 'vi') => {
+  const handleLangChange = (newLang: 'en' | 'vi') => {
     setLang(newLang)
-    if (auth.isLoggedIn && auth.token) {
-      try { await updateLanguagePref(auth.token, newLang) } catch { /* silently ignore */ }
-    }
   }
 
   return (
@@ -80,58 +73,6 @@ export default function SettingsPanel({ onClose, onOpenAuth }: Props) {
               </button>
             ))}
           </div>
-        </div>
-
-        {/* Divider */}
-        <div style={{ borderTop: '1px solid var(--border)' }} />
-
-        {/* Account section */}
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
-            {st.account}
-          </div>
-          {auth.isLoggedIn && auth.user ? (
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-                <div style={{
-                  width: 36, height: 36, borderRadius: '50%',
-                  background: 'var(--ink)', color: 'var(--bg)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 15, fontWeight: 700, flexShrink: 0,
-                }}>
-                  {(auth.user.display_name ?? auth.user.email)[0].toUpperCase()}
-                </div>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {auth.user.display_name ?? auth.user.email}
-                  </div>
-                  {auth.user.display_name && (
-                    <div style={{ fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {auth.user.email}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <button
-                className="btn btn-outline btn-sm"
-                style={{ width: '100%', justifyContent: 'center' }}
-                onClick={() => { auth.logout(); onClose() }}
-              >
-                {st.logout}
-              </button>
-            </div>
-          ) : (
-            <div>
-              <p style={{ fontSize: 12.5, color: 'var(--ink-3)', marginBottom: 12, lineHeight: 1.5 }}>{st.loginPrompt}</p>
-              <button
-                className="btn btn-primary"
-                style={{ width: '100%', justifyContent: 'center' }}
-                onClick={() => { onClose(); onOpenAuth() }}
-              >
-                <Icon name="user" size={15} /> {st.loginBtn}
-              </button>
-            </div>
-          )}
         </div>
       </div>
     </div>

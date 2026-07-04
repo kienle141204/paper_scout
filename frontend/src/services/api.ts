@@ -1,6 +1,5 @@
 import type { Conference, Paper } from '../types/paper'
 import type { ChatRequest, ChatResponse } from '../types/chat'
-import type { User } from '../contexts/AuthContext'
 import type { IngestResult, AskResult } from '../types/rag'
 
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
@@ -8,8 +7,27 @@ const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
 // Routes a paper's PDF through our backend so <iframe> embedding works
 // regardless of the source's X-Frame-Options/CORS policy (e.g. OpenReview
 // blocks cross-origin framing; arXiv doesn't — proxying makes both uniform).
-export function pdfProxyUrl(pdfUrl: string): string {
-  return `${BASE}/api/papers/pdf/proxy?url=${encodeURIComponent(pdfUrl)}`
+export function pdfProxyUrl(pdfUrl: string, title?: string, paperId?: string): string {
+  const t = title ? `&title=${encodeURIComponent(title)}` : ''
+  const p = paperId ? `&paper_id=${encodeURIComponent(paperId)}` : ''
+  return `${BASE}/api/papers/pdf/proxy?url=${encodeURIComponent(pdfUrl)}${t}${p}`
+}
+
+// Ask the backend whether an embeddable PDF exists (OpenReview blocks framing +
+// anonymous fetch, so it resolves an arXiv copy by title). Returns the url to
+// embed via pdfProxyUrl, or null when the Reader should fall back to the
+// reading view instead of showing a broken iframe.
+export async function resolvePdfUrl(pdfUrl: string, title?: string, paperId?: string): Promise<string | null> {
+  const t = title ? `&title=${encodeURIComponent(title)}` : ''
+  const p = paperId ? `&paper_id=${encodeURIComponent(paperId)}` : ''
+  try {
+    const r = await fetch(`${BASE}/api/papers/pdf/resolve?url=${encodeURIComponent(pdfUrl)}${t}${p}`)
+    if (!r.ok) return null
+    const data = await r.json()
+    return data.embeddable ? (data.url as string) : null
+  } catch {
+    return null
+  }
 }
 
 // ── Backend shapes ───────────────────────────────
@@ -21,17 +39,26 @@ interface BackendConference {
 }
 
 interface BackendAuthor {
-  name: string
+  name?: string
   author_id?: string
 }
+type BackendAuthorLike = BackendAuthor | string
 
 interface BackendPaper {
   paper_id: string
+  source?: string
+  source_ids?: {
+    semantic_scholar?: string | null
+    openalex?: string | null
+    arxiv?: string | null
+    doi?: string | null
+    openreview?: string | null
+  }
   title: string
   abstract?: string
   summary?: string
   title_vi?: string
-  authors: BackendAuthor[]
+  authors?: BackendAuthorLike[]
   year?: number
   venue?: string
   conference?: string
@@ -39,6 +66,16 @@ interface BackendPaper {
   pdf_url?: string
   citation_count?: number
   relevance_score?: number
+  rank_score?: number
+  quality_signals?: {
+    matched_filters?: string[]
+    source_count?: number
+    has_pdf?: boolean
+  }
+  why_recommended?: string | null
+  relation?: string
+  score?: number
+  reason?: string
   key_contributions?: string[]
   tags?: string[]
 }
@@ -67,19 +104,31 @@ interface BackendSearchResponse {
   query: string
   has_more?: boolean
   corrected_query?: string | null
+  session_id?: string | null
+  query_plan?: Record<string, unknown>
+  source_stats?: Record<string, unknown>
+  warnings?: string[]
   synthesis?: string | null
   synthesis_citations?: SearchSynthesisCitation[]
 }
 
 // ── Mappers ──────────────────────────────────────
+function mapAuthors(authors: BackendAuthorLike[] | undefined): string[] {
+  return (authors ?? [])
+    .map((author) => (typeof author === 'string' ? author : author.name))
+    .filter((name): name is string => Boolean(name && name.trim()))
+}
+
 function mapPaper(p: BackendPaper): Paper {
   return {
     id: p.paper_id,
+    source: p.source,
+    sourceIds: p.source_ids,
     titleEn: p.title,
     titleVi: p.title_vi,
     abstractEn: p.abstract,
     abstractVi: p.summary,
-    authors: p.authors.map((a) => a.name),
+    authors: mapAuthors(p.authors),
     year: p.year,
     conf: p.conference,
     venue: p.venue,
@@ -87,6 +136,12 @@ function mapPaper(p: BackendPaper): Paper {
     pdfUrl: p.pdf_url,
     citations: p.citation_count ?? null,
     relevance: Math.round((p.relevance_score ?? 0) * 100),
+    rankScore: p.rank_score ?? null,
+    qualitySignals: p.quality_signals,
+    whyRecommended: p.why_recommended,
+    relation: p.relation,
+    relatedScore: p.score,
+    relatedReason: p.reason,
     keywords: p.tags ?? [],
     keyContributions: p.key_contributions,
   }
@@ -95,6 +150,8 @@ function mapPaper(p: BackendPaper): Paper {
 function mapAgentPaper(p: AgentPaper): Paper {
   return {
     id: p.id ?? p.doi ?? p.url ?? p.title,
+    source: p.source,
+    sourceIds: { doi: p.doi ?? null, openalex: p.source === 'openalex' ? p.id : null, arxiv: p.source === 'arxiv' ? p.id : null },
     titleEn: p.title,
     abstractEn: p.abstract ?? undefined,
     authors: p.authors ?? [],
@@ -157,6 +214,8 @@ export interface SearchParams {
   offset?: number
   correctedQuery?: string | null
   includeSynthesis?: boolean
+  sessionId?: string | null
+  sources?: string[]
 }
 
 export interface ParsedQuery {
@@ -347,49 +406,6 @@ export async function analyzePaper(
   }
 }
 
-// ── Auth API functions ───────────────────────────
-export interface AuthResponse {
-  token: string
-  user: User
-}
-
-export async function authLogin(params: { email: string; password: string }): Promise<AuthResponse> {
-  const res = await fetch(`${BASE}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  })
-  if (!res.ok) {
-    const err: { detail?: string } = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? `HTTP ${res.status}`)
-  }
-  return res.json()
-}
-
-export async function authRegister(params: { email: string; password: string; display_name?: string }): Promise<AuthResponse> {
-  const res = await fetch(`${BASE}/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  })
-  if (!res.ok) {
-    const err: { detail?: string } = await res.json().catch(() => ({}))
-    throw new Error(err.detail ?? `HTTP ${res.status}`)
-  }
-  return res.json()
-}
-
-export async function updateLanguagePref(token: string, lang: 'en' | 'vi'): Promise<void> {
-  await fetch(`${BASE}/auth/me`, {
-    method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ language_pref: lang }),
-  })
-}
-
 export async function searchPapers(
   params: SearchParams,
 ): Promise<{
@@ -398,6 +414,10 @@ export async function searchPapers(
   query: string
   hasMore: boolean
   correctedQuery: string | null
+  sessionId: string | null
+  queryPlan: Record<string, unknown>
+  sourceStats: Record<string, unknown>
+  warnings: string[]
   synthesis: string | null
   synthesisCitations: SearchSynthesisCitation[]
 }> {
@@ -415,6 +435,8 @@ export async function searchPapers(
       offset: params.offset ?? 0,
       corrected_query: params.correctedQuery ?? null,
       include_synthesis: params.includeSynthesis ?? false,
+      session_id: params.sessionId ?? null,
+      sources: params.sources ?? ['openreview'],
     }),
   })
 
@@ -434,9 +456,60 @@ export async function searchPapers(
     query: data.query,
     hasMore: data.has_more ?? false,
     correctedQuery: data.corrected_query ?? null,
+    sessionId: data.session_id ?? null,
+    queryPlan: data.query_plan ?? {},
+    sourceStats: data.source_stats ?? {},
+    warnings: data.warnings ?? [],
     synthesis: data.synthesis ?? null,
     synthesisCitations: data.synthesis_citations ?? [],
   }
+}
+
+function paperToBackendCandidate(p: Paper): BackendPaper {
+  return {
+    paper_id: p.id,
+    source: p.source,
+    source_ids: p.sourceIds,
+    title: p.titleEn,
+    abstract: p.abstractEn,
+    authors: p.authors.map((name) => ({ name })),
+    year: p.year,
+    venue: p.venue,
+    conference: p.conf,
+    url: p.url,
+    pdf_url: p.pdfUrl,
+    citation_count: p.citations ?? undefined,
+    relevance_score: p.relevance / 100,
+    rank_score: p.rankScore ?? undefined,
+    quality_signals: p.qualitySignals,
+    why_recommended: p.whyRecommended,
+    key_contributions: p.keyContributions,
+    tags: p.keywords,
+  }
+}
+
+export async function getRelatedPapers(params: {
+  focusPaperId: string
+  currentSessionId?: string | null
+  candidates?: Paper[]
+  limit?: number
+}): Promise<Paper[]> {
+  const res = await fetch(`${BASE}/api/papers/related`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      focus_paper_id: params.focusPaperId,
+      current_session_id: params.currentSessionId ?? null,
+      candidates: (params.candidates ?? []).map(paperToBackendCandidate),
+      limit: params.limit ?? 3,
+    }),
+  })
+  if (!res.ok) {
+    const err: { detail?: string } = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  const data: { related: BackendPaper[] } = await res.json()
+  return data.related.map(mapPaper)
 }
 
 // ── RAG paper agent ──────────────────────────────
@@ -503,4 +576,61 @@ export async function askPaper(params: AskPaperParams): Promise<AskResult> {
   } finally {
     clearTimeout(timeout)
   }
+}
+
+export async function getMemory(): Promise<Record<string, unknown>> {
+  const res = await fetch(`${BASE}/api/memory/me`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function patchMemoryPreferences(preferences: Record<string, unknown>): Promise<{ ok: boolean }> {
+  const res = await fetch(`${BASE}/api/memory/preferences`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ preferences }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function deleteMemoryTopic(topicId: string): Promise<{ ok: boolean }> {
+  const res = await fetch(`${BASE}/api/memory/topics/${encodeURIComponent(topicId)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function deleteAllMemory(): Promise<{ ok: boolean }> {
+  const res = await fetch(`${BASE}/api/memory/me`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function exportPaperToNotion(params: {
+  paperId: string
+  noteType?: 'summary' | 'qa' | 'full_reading_note'
+  includeQaHistory?: boolean
+  targetDatabaseId?: string | null
+  targetPageId?: string | null
+  paper?: Paper
+  qaHistory?: Array<{ role: 'user' | 'assistant'; content: string }>
+}): Promise<{ notion_page_id: string | null; created: boolean; updated: boolean; preview: string }> {
+  const res = await fetch(`${BASE}/api/papers/export/notion`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      paper_id: params.paperId,
+      note_type: params.noteType ?? 'summary',
+      include_qa_history: params.includeQaHistory ?? false,
+      target_database_id: params.targetDatabaseId ?? null,
+      target_page_id: params.targetPageId ?? null,
+      paper: params.paper ? paperToBackendCandidate(params.paper) : null,
+      qa_history: params.qaHistory ?? [],
+    }),
+  })
+  if (!res.ok) {
+    const err: { detail?: string } = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json()
 }

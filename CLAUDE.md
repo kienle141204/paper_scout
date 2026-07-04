@@ -4,16 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # PaperScout
 
-Ứng dụng tìm kiếm paper học thuật với AI. Backend FastAPI + Frontend React/TypeScript. Hỗ trợ tìm kiếm đa nguồn (S2, arXiv, OpenReview), dịch abstract sang tiếng Việt, và conversational AI search.
+**Trợ lý research cá nhân chạy local** (single-user, không auth, không deploy). Backend FastAPI +
+Frontend React/TypeScript. Hỗ trợ tìm kiếm đa nguồn (S2, arXiv, OpenReview), dịch abstract sang
+tiếng Việt, và conversational AI search. Người dùng clone repo → thêm key LLM vào `backend/.env` →
+chạy `python run.py`.
 
 ## Chạy dev
 
 ```bash
-# Backend — chạy từ root (PYTHONPATH cần thấy agent/)
-uvicorn backend.api:app --host 0.0.0.0 --port 8000 --reload
+# Một lệnh: khởi động backend (:8000, --reload) + frontend (:5173) song song, tự cài deps lần đầu
+python run.py
+```
 
-# Frontend
-cd frontend && npm install && npm run dev
+Hoặc chạy tay từng phần (từ repo root để `import agent` resolve được):
+
+```bash
+uvicorn backend.api:app --host 0.0.0.0 --port 8000 --reload   # backend
+cd frontend && npm install && npm run dev                     # frontend
 ```
 
 Frontend yêu cầu `frontend/.env` (copy từ `.env.example`):
@@ -81,9 +88,10 @@ paper_summary/
 │       ├── citation.py         # apa_from_doi, bibtex_from_doi
 │       ├── web_fetch.py        # fetch_paper_from_url
 │       ├── pdf_fetcher.py      # fetch_pdf() — download PDF (arXiv/OpenReview URL → direct PDF)
-│       ├── pdf_parser.py       # PDF text extraction (pypdf)
-│       ├── chunker.py          # make_chunks/split_text — chunk ~400 token, overlap 80
-│       ├── rag_store.py        # Supabase vector store (table paper_chunks, cosine tính trong Python)
+│       ├── mineru_parser.py    # MinerU (subprocess CLI) → content_list blocks (section/page/table/eq); canonical_section()
+│       ├── pdf_parser.py       # parse_pdf() → PdfParseResult (dùng MinerU blocks, thay pypdf); giữ API cho /pdf/parse
+│       ├── chunker.py          # make_chunks_from_blocks (section thật + page + block_type; bảng = 1 chunk); split_text fallback
+│       ├── rag_store.py        # Supabase vector store (paper_chunks: +page +block_type, cosine tính trong Python)
 │       ├── library.py          # SQLite local library CRUD
 │       └── paper_cache.py      # Supabase cache (paper_cache table)
 │
@@ -97,11 +105,11 @@ paper_summary/
 │
 ├── frontend/src/
 │   ├── App.tsx             # Root — screen routing (history API, không dùng React Router) + shared state
-│   ├── contexts/           # AuthContext.tsx, LanguageContext.tsx
+│   ├── contexts/           # LanguageContext.tsx
 │   ├── types/              # paper.ts (Paper.pdfUrl — link PDF trực tiếp, tách biệt với url), chat.ts, rag.ts
 │   ├── services/api.ts     # All API calls + mappers (BackendPaper → Paper)
 │   ├── hooks/usePaperRagChat.ts          # State machine ingest/ask dùng chung — xem mục RAG Agent bên dưới
-│   ├── components/         # atoms.tsx, NavBar, ResultCard, FilterSidebar, AuthModal, SettingsPanel,
+│   ├── components/         # atoms.tsx, NavBar, ResultCard, FilterSidebar, SettingsPanel,
 │   │                       # PaperAgentBubble.tsx (bong bóng RAG nổi), rag/MessageParts.tsx (render message dùng chung)…
 │   ├── screens/            # HomeScreen, ResultsScreen, DetailScreen, ReaderScreen (đọc PDF + hỏi đáp full-page),
 │   │                       # SavedScreen, ChatScreen
@@ -122,10 +130,6 @@ paper_summary/
 | `POST /api/papers/analyze` | HTML report 3 sections (motivation/visual/results); cached in `analysis_html` column |
 | `POST /api/parse-query` | NL query → keywords/keyword_variants/venues/year |
 | `POST /api/chat` | Stateless conversational agent (full history per request) |
-| `POST /auth/register` | Tạo tài khoản (bcrypt + JWT) |
-| `POST /auth/login` | Đăng nhập → JWT token |
-| `GET /auth/me` | Profile user hiện tại (Bearer token) |
-| `PATCH /auth/me` | Cập nhật display_name, language_pref |
 | `POST /detail` | Paper detail by DOI/arxiv/S2/OpenAlex ID |
 | `POST /translate` | Dịch abstract sang tiếng Việt |
 | `POST /summarize` | Tóm tắt abstract (5 bullet points) |
@@ -157,16 +161,30 @@ LLM trong `/api/chat` trả về JSON `{action: "search"|"clarify"|"filter"|"don
 - `action=filter` → chạy `applyFilterParams()` local (không gọi backend)
 - Chat là **stateless** — server không lưu session; client gửi toàn bộ history mỗi request (cắt tối đa 30 messages)
 
-### Auth system
-- JWT (HS256, 30 ngày) do backend tự issue. Secret: env var `JWT_SECRET` (default `dev-secret-change-in-prod`).
-- Password hash bằng bcrypt. User lưu trong Supabase table `app_users`.
-- Auth dùng `SUPABASE_SERVICE_ROLE_KEY` (bypass RLS). Nếu không có, dùng `SUPABASE_ANON_KEY` nhưng phải tắt RLS trên `app_users`.
-- Frontend lưu token trong `localStorage` (`ps_token`, `ps_user`). Saved papers lưu trong `ps_saved_papers`.
+### Single-user, no auth
+- **Không có đăng nhập** — app là công cụ cá nhân chạy local. Không có endpoint `/auth/*`, không JWT,
+  không bcrypt, không bảng `app_users`.
+- Dữ liệu **cá nhân** nằm trên máy: saved papers + lịch sử + ngôn ngữ trong `localStorage`
+  (`ps_saved_papers`, `ps_search_history`, `ps_lang`, `ps_analysis_*`); thư viện CLI trong
+  `library.sqlite3` (bảng `papers` + `profile`). Save paper hoạt động ngay, không cần login.
 
-### Supabase caching
-- `paper_cache` table: `paper_id` (PK), `abstract_vi`, `analysis_html`, metadata columns.
-- `paper_cache.py` dùng `SUPABASE_ANON_KEY`; auth dùng `SUPABASE_SERVICE_ROLE_KEY`.
-- Cache write là **fire-and-forget** qua `_bg_pool` (ThreadPoolExecutor 4 workers) — không block HTTP response.
+### Shared paper DB (Supabase)
+- DB paper **dùng chung** cho mọi người clone repo. `SUPABASE_URL` + **publishable key** (`sb_publishable_…`,
+  thay anon key cũ) được nhúng sẵn ở `agent/tools/shared_supabase.py` (env `SUPABASE_URL` /
+  `SUPABASE_PUBLISHABLE_KEY` ghi đè → dùng Supabase riêng). **Secret key (`sb_secret_…`) KHÔNG BAO GIỜ
+  commit** — chỉ đọc từ env qua `get_supabase_secret_key()`, dùng bởi `scripts/setup_supabase.py` (tạo
+  bucket) một lần. Key mới `sb_…` cần `supabase-py>=2.16` (bản 2.15 từ chối định dạng này).
+- `paper_cache` table: `paper_id` (PK), `abstract_vi`, `analysis_html`, metadata columns. Cache write
+  là **fire-and-forget** qua `_bg_pool` (ThreadPoolExecutor 4 workers) — không block HTTP response.
+- `paper_chunks` table: RAG vector store. Cột `section` (canonical), `page` (0-based), `block_type`
+  (`text`/`table`/`equation`) — điền từ MinerU khi ingest, dùng cho retrieval theo section + citation theo trang.
+- `paper_pdfs` **storage bucket** (public): cache file PDF theo `paper_id` (`agent/tools/pdf_store.py`),
+  đồng thời cache **content_list.json của MinerU** (`store_parsed_json`/`download_parsed_json`) để re-ingest
+  không phải chạy lại MinerU (CPU chậm). Endpoint `/pdf/proxy?paper_id=…` redirect 307 sang public URL khi
+  cache hit (frame inline từ CDN), miss thì `fetch_pdf` → stream inline + upload nền. `rag/ingest.py` cũng
+  đọc/ghi cache này nên Reader và ingest **dùng chung 1 lần tải**. Đều qua `shared_supabase.py`.
+- Bảng tắt RLS; bucket có policy anon read/write. Setup project mới: chạy `supabase_migration.sql`
+  (SQL Editor) rồi `python scripts/setup_supabase.py` (tạo bucket). Xem cảnh báo RLS trong README.
 
 ### Search pipeline — Search Agent (`agent/search/`)
 `run_search()` (`agent/search/agent.py`) chạy loop: rewrite query → tìm đa nguồn → chấm điểm → nếu chưa đủ paper "tốt" thì lặp lại tới `max_iterations` (mặc định 3) hoặc tới khi diminishing-returns. Trong mỗi vòng:
@@ -177,6 +195,16 @@ LLM trong `/api/chat` trả về JSON `{action: "search"|"clarify"|"filter"|"don
 5. Nếu `include_synthesis=True`: `synthesize()` tổng hợp có trích dẫn `[n]`, output guardrail strip citation trỏ tới paper không tồn tại trong kết quả.
 
 `pdf_url` (tách biệt với `url`): ưu tiên `openAccessPdf.url` từ S2 — chỉ set khi có link PDF trực tiếp thật; `url` vẫn là link "xem online" (S2 page / DOI) dùng làm fallback hiển thị + input cho `fetch_pdf()` khi ingest.
+
+### Ingest — PDF → cấu trúc (MinerU)
+`ingest_paper()` (`agent/rag/ingest.py`) dùng **MinerU** (backend `pipeline`, CPU) thay pypdf:
+`fetch_pdf` → `run_mineru_content_list()` (subprocess CLI `mineru`, đọc `content_list.json`) →
+`blocks_from_content_list()` → `make_chunks_from_blocks()` → embed → `store_chunks`. Chunk mang
+`section` (canonical từ heading thật), `page`, `block_type`; **bảng số liệu giữ nguyên 1 chunk**
+(`block_type=table`, caption + grid) để retrieval kết quả không mất số. content_list.json được cache ở
+bucket `paper_pdfs` nên re-ingest không chạy lại MinerU. Không có PDF/MinerU rỗng → fallback abstract-only.
+MinerU nặng (torch + model): cài qua `pip install -e .`, tải model 1 lần `python scripts/download_mineru_models.py`.
+Config MinerU ở `[parser]` trong `config.toml` (`mineru_backend`/`mineru_device`/`mineru_lang`).
 
 ### RAG Agent (`agent/rag/`) — hỏi đáp trên 1 paper
 `run_rag_ask()` (`agent/rag/agent.py`): input guardrail → auto-ingest nếu paper chưa được index (cần `title`/`abstract` trong request) → `dispatcher.classify_lane()` chọn 1 trong 3 lane:
@@ -189,7 +217,8 @@ Sau khi có answer: `check_grounded()` + output guardrail — refuse nếu hallu
 Frontend dùng chung 1 hook `usePaperRagChat` (ingest + ask state machine) cho 2 nơi: `PaperAgentBubble` (bong bóng nổi trên DetailScreen) và `ReaderScreen` (đọc PDF qua `<iframe>` + chat full-page, tự ingest khi mở màn hình).
 
 ### i18n
-`LanguageContext` + `frontend/src/i18n/translations.ts`. Language pref lưu cả frontend (`localStorage`) và backend (cột `language_pref` trong `app_users`).
+`LanguageContext` + `frontend/src/i18n/translations.ts`. Language pref lưu thuần frontend
+(`localStorage` key `ps_lang`).
 
 ## Env vars
 
@@ -200,16 +229,17 @@ Frontend dùng chung 1 hook `usePaperRagChat` (ingest + ask state machine) cho 2
 | `OPENAI_API_KEY` | Nếu dùng OpenAI | LLM + embeddings |
 | `GEMINI_API_KEY` | Nếu dùng Gemini | Thay thế OpenAI |
 | `SEMANTIC_SCHOLAR_API_KEY` | Optional | Tăng rate limit S2 |
-| `SUPABASE_URL` | Optional | Paper cache + auth |
-| `SUPABASE_ANON_KEY` | Optional | Paper cache (`paper_cache` table) |
-| `SUPABASE_SERVICE_ROLE_KEY` | Optional | Auth (`app_users` table, bypass RLS) |
-| `JWT_SECRET` | Optional | JWT signing (default: insecure dev value) |
+| `SUPABASE_URL` | Optional | Ghi đè DB paper chung bằng Supabase riêng |
+| `SUPABASE_ANON_KEY` | Optional | Anon key cho Supabase riêng (đi kèm `SUPABASE_URL`) |
+
+DB paper chung có defaults nhúng sẵn ở `agent/tools/shared_supabase.py` — không cần set Supabase env
+để chạy.
 
 ### Frontend (`frontend/.env`)
 
 | Var | Mô tả |
 |-----|--------|
-| `VITE_API_URL` | Backend URL (default: `''` — same origin; dev: `http://localhost:8000`) |
+| `VITE_API_URL` | Backend URL (để trống được — vite proxy `/api` → `:8000` khi dev) |
 
 ## `config.toml` schema
 
@@ -242,9 +272,9 @@ base_url = "https://generativelanguage.googleapis.com/v1beta"
 
 ## Stack
 
-- **Backend**: FastAPI, Python 3.10+, tenacity (retry), python-jose (JWT), bcrypt
+- **Chạy**: `python run.py` — launcher local khởi động backend + frontend song song (không deploy)
+- **Backend**: FastAPI, Python 3.10+, tenacity (retry), uvicorn
 - **Frontend**: React 18, TypeScript, Vite, Tailwind CSS
 - **Paper sources**: Semantic Scholar (primary), OpenReview, arXiv, OpenAlex, Crossref, DBLP
-- **Cache**: Supabase (`paper_cache` table — abstract_vi + analysis_html; `paper_chunks` table — RAG vector store)
-- **Auth**: Custom JWT, Supabase `app_users` table
-- **Local library**: SQLite via `agent/tools/library.py`
+- **Shared paper DB**: Supabase chung (`paper_cache` — abstract_vi + analysis_html; `paper_chunks` — RAG vector store), creds nhúng ở `agent/tools/shared_supabase.py`
+- **Dữ liệu cá nhân (local)**: `localStorage` (saved papers, lịch sử, ngôn ngữ) + SQLite `library.sqlite3` (thư viện CLI)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from typing import Any
 
@@ -18,8 +17,9 @@ def _get_client():
     with _client_lock:
         if _client_ready:
             return _client_obj
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_ANON_KEY")
+        from agent.tools.shared_supabase import get_supabase_anon_key, get_supabase_url
+        url = get_supabase_url()
+        key = get_supabase_anon_key()
         if url and key:
             try:
                 from supabase import create_client
@@ -109,5 +109,9 @@ def upsert_analysis(paper_id: str, html: str) -> None:
 
 
 def is_configured() -> bool:
-    """Kiểm tra Supabase đã được cấu hình chưa."""
-    return bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY"))
+    """Kiểm tra Supabase đã được cấu hình chưa.
+
+    Luôn True nhờ DB paper dùng chung (baked-in defaults trong shared_supabase.py);
+    trả về client thật để chắc chắn kết nối tạo được.
+    """
+    return _get_client() is not None

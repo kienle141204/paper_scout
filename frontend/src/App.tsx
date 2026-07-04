@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import NavBar from './components/NavBar'
 import AdvancedFilters from './components/AdvancedFilters'
-import AuthModal from './components/AuthModal'
 import SettingsPanel from './components/SettingsPanel'
 import HomeScreen from './screens/HomeScreen'
 import ResultsScreen from './screens/ResultsScreen'
@@ -11,10 +10,9 @@ import SavedScreen from './screens/SavedScreen'
 import ChatScreen from './screens/ChatScreen'
 import type { Paper, Conference, Filters, SortKey, Screen } from './types/paper'
 import { DEFAULT_FILTERS } from './types/paper'
-import { getConferences, searchPapers, parseQuery } from './services/api'
+import { getConferences, searchPapers, parseQuery, getRelatedPapers } from './services/api'
 import type { SearchParams } from './services/api'
 import { LanguageProvider } from './contexts/LanguageContext'
-import { AuthProvider, useAuth } from './contexts/AuthContext'
 
 function screenToUrl(screen: Screen, selectedId: string | null, query: string): string {
   if (screen === 'detail' && selectedId) return `/detail/${encodeURIComponent(selectedId)}`
@@ -42,11 +40,11 @@ function parseInitialUrl(): { screen: Screen; selectedId: string | null } {
 
 // Parse URL once before component mounts (not inside render loop)
 const _INIT = parseInitialUrl()
+type NavEntry = { screen: Screen; selectedId: string | null }
 
 function AppInner() {
-  const { isLoggedIn } = useAuth()
   const [screen, setScreen] = useState<Screen>(_INIT.screen)
-  const [prevScreen, setPrevScreen] = useState<Screen>('results')
+  const [navStack, setNavStack] = useState<NavEntry[]>([])
   const [query, setQuery] = useState('')
   const [papers, setPapers] = useState<Paper[]>([])
   const [loading, setLoading] = useState(false)
@@ -54,7 +52,6 @@ function AppInner() {
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
   const [sort, setSort] = useState<SortKey>('relevance')
   const [savedMap, setSavedMap] = useState<Record<string, Paper>>(() => {
-    if (!localStorage.getItem('ps_token')) return {}
     try { return JSON.parse(localStorage.getItem('ps_saved_papers') ?? '{}') } catch { return {} }
   })
   const savedIds = useMemo(() => Object.keys(savedMap), [savedMap])
@@ -64,18 +61,12 @@ function AppInner() {
   const [conferences, setConferences] = useState<Conference[]>([])
   const [confError, setConfError] = useState(false)
   const [lastSearchParams, setLastSearchParams] = useState<SearchParams | null>(null)
+  const [currentSearchSessionId, setCurrentSearchSessionId] = useState<string | null>(null)
+  const [relatedPapers, setRelatedPapers] = useState<Paper[]>([])
   const [hasMore, setHasMore] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const [correctedQuery, setCorrectedQuery] = useState<string | null>(null)
-  const [authModalOpen, setAuthModalOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-
-  // When user logs out, clear savedMap
-  useEffect(() => {
-    if (!isLoggedIn) {
-      setSavedMap({})
-    }
-  }, [isLoggedIn])
 
   // ── URL / History routing ────────────────────────────────────────────────
   const isPopping = useRef(false)
@@ -101,6 +92,7 @@ function AppInner() {
       const s = e.state as { screen?: Screen; selectedId?: string | null; query?: string } | null
       if (!s?.screen) return
       isPopping.current = true
+      setNavStack([])
       setScreen(s.screen)
       setSelectedId(s.selectedId ?? null)
       if (s.query !== undefined) setQuery(s.query)
@@ -129,6 +121,10 @@ function AppInner() {
     setLoading(true)
     setError(null)
     setPapers([])
+    setRelatedPapers([])
+    setCurrentSearchSessionId(null)
+    setNavStack([])
+    setSelectedId(null)
     setHasMore(false)
     setCorrectedQuery(null)
     setCurrentPage(1)
@@ -138,6 +134,8 @@ function AppInner() {
       setPapers(result.papers)
       setHasMore(result.hasMore)
       setCorrectedQuery(result.correctedQuery)
+      setCurrentSearchSessionId(result.sessionId)
+      setLastSearchParams({ ...params, sessionId: result.sessionId })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unknown error occurred.')
     } finally {
@@ -156,13 +154,15 @@ function AppInner() {
       const result = await searchPapers({ ...lastSearchParams, offset: (page - 1) * PAGE_SIZE, limit: PAGE_SIZE })
       setPapers(result.papers)
       setHasMore(result.hasMore)
+      setCurrentSearchSessionId(result.sessionId ?? currentSearchSessionId)
+      setLastSearchParams({ ...lastSearchParams, sessionId: result.sessionId ?? currentSearchSessionId })
       setCurrentPage(page)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unknown error occurred.')
     } finally {
       setLoading(false)
     }
-  }, [lastSearchParams, PAGE_SIZE])
+  }, [lastSearchParams, PAGE_SIZE, currentSearchSessionId])
 
   const handleSearch = useCallback(
     async (args: { query: string; confs: string[]; yearFrom: number; yearTo: number }) => {
@@ -193,10 +193,6 @@ function AppInner() {
   }, [lastSearchParams, currentPage, goToPage])
 
   const toggleSave = useCallback((id: string) => {
-    if (!isLoggedIn) {
-      setAuthModalOpen(true)
-      return
-    }
     setSavedMap((prev) => {
       let next: Record<string, Paper>
       if (id in prev) {
@@ -210,13 +206,15 @@ function AppInner() {
       localStorage.setItem('ps_saved_papers', JSON.stringify(next))
       return next
     })
-  }, [papers, chatPapersMap, isLoggedIn])
+  }, [papers, chatPapersMap])
 
   const openPaper = useCallback((id: string) => {
-    setPrevScreen(screen)
+    if (screen !== 'detail' || selectedId !== id) {
+      setNavStack((prev) => [...prev, { screen, selectedId }])
+    }
     setSelectedId(id)
     setScreen('detail')
-  }, [screen])
+  }, [screen, selectedId])
 
   const openPaperObj = useCallback((paper: Paper) => {
     setChatPapersMap((prev) => (paper.id in prev ? prev : { ...prev, [paper.id]: paper }))
@@ -224,14 +222,22 @@ function AppInner() {
   }, [openPaper])
 
   const openReader = useCallback((id: string) => {
-    setPrevScreen('detail')
+    setNavStack((prev) => [...prev, { screen: 'detail', selectedId: id }])
     setSelectedId(id)
     setScreen('reader')
   }, [])
 
   const handleBack = useCallback(() => {
-    setScreen(prevScreen)
-  }, [prevScreen])
+    const target = navStack[navStack.length - 1]
+    setNavStack((prev) => prev.slice(0, -1))
+    if (target) {
+      setScreen(target.screen)
+      setSelectedId(target.selectedId)
+      return
+    }
+    setSelectedId(null)
+    setScreen(lastSearchParams ? 'results' : 'home')
+  }, [navStack, lastSearchParams])
 
   const selected = useMemo(
     () => papers.find((p) => p.id === selectedId)
@@ -239,7 +245,7 @@ function AppInner() {
     [papers, selectedId, chatPapersMap, savedMap],
   )
 
-  const related = useMemo(() => {
+  const fallbackRelated = useMemo(() => {
     if (!selected) return []
     const kws = new Set(selected.keywords.map((k) => k.toLowerCase()))
     const pool = papers.length > 0 ? papers : Object.values(chatPapersMap)
@@ -248,6 +254,28 @@ function AppInner() {
       .sort((a, b) => b.relevance - a.relevance)
       .slice(0, 3)
   }, [selected, papers, chatPapersMap])
+
+  useEffect(() => {
+    if (!selected || screen !== 'detail') {
+      setRelatedPapers([])
+      return
+    }
+    let cancelled = false
+    setRelatedPapers(fallbackRelated)
+    getRelatedPapers({
+      focusPaperId: selected.id,
+      currentSessionId: currentSearchSessionId,
+      candidates: papers.length > 0 ? papers : Object.values(chatPapersMap),
+      limit: 3,
+    })
+      .then((items) => {
+        if (!cancelled && items.length > 0) setRelatedPapers(items)
+      })
+      .catch(() => {
+        if (!cancelled) setRelatedPapers(fallbackRelated)
+      })
+    return () => { cancelled = true }
+  }, [selected, screen, currentSearchSessionId, papers, chatPapersMap, fallbackRelated])
 
   const savedPapers = useMemo(() => Object.values(savedMap), [savedMap])
 
@@ -272,7 +300,6 @@ function AppInner() {
         onChat={() => setScreen('chat')}
         onSearch={(q) => handleSearch({ query: q, confs: filters.confs, yearFrom: filters.years[0], yearTo: filters.years[1] })}
         onSettings={() => setSettingsOpen(true)}
-        onLogin={() => setAuthModalOpen(true)}
       />
 
       {screen === 'home' && (
@@ -308,13 +335,12 @@ function AppInner() {
         <DetailScreen
           paper={selected}
           saved={savedIds.includes(selected.id)}
-          related={related}
+          related={relatedPapers}
           conferences={conferences}
           onToggleSave={() => toggleSave(selected.id)}
           onBack={handleBack}
           onOpen={openPaper}
           onOpenReader={openReader}
-          onNeedAuth={() => setAuthModalOpen(true)}
         />
       )}
 
@@ -324,7 +350,6 @@ function AppInner() {
           saved={savedIds.includes(selected.id)}
           onToggleSave={() => toggleSave(selected.id)}
           onBack={handleBack}
-          onNeedAuth={() => setAuthModalOpen(true)}
         />
       )}
 
@@ -334,7 +359,6 @@ function AppInner() {
           onOpen={openPaper}
           onToggleSave={toggleSave}
           onGoSearch={() => setScreen('home')}
-          onOpenAuth={() => setAuthModalOpen(true)}
         />
       )}
 
@@ -357,14 +381,9 @@ function AppInner() {
         />
       )}
 
-      {authModalOpen && (
-        <AuthModal onClose={() => setAuthModalOpen(false)} />
-      )}
-
       {settingsOpen && (
         <SettingsPanel
           onClose={() => setSettingsOpen(false)}
-          onOpenAuth={() => setAuthModalOpen(true)}
         />
       )}
 
@@ -394,9 +413,7 @@ function AppInner() {
 export default function App() {
   return (
     <LanguageProvider>
-      <AuthProvider>
-        <AppInner />
-      </AuthProvider>
+      <AppInner />
     </LanguageProvider>
   )
 }

@@ -116,11 +116,12 @@ export function SaveBtn({ saved, onClick, label, size = 'sm' }: SaveBtnProps) {
 
 // ── Authors line ─────────────────────────────────
 export function Authors({ list, max = 4 }: { list: string[]; max?: number }) {
-  const shown = list.slice(0, max)
-  const extra = list.length - shown.length
+  const clean = list.filter((name) => name && name.trim())
+  const shown = clean.slice(0, max)
+  const extra = clean.length - shown.length
   return (
     <span style={{ color: 'var(--ink-2)', fontSize: 13.5 }}>
-      {shown.join(', ')}
+      {shown.length > 0 ? shown.join(', ') : 'Không rõ tác giả'}
       {extra > 0 && <span className="muted"> +{extra} tác giả</span>}
     </span>
   )

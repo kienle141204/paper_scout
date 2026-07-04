@@ -5,14 +5,17 @@ IngestError on failure; the API boundary converts that to HTTPException.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from agent.config import Config
 from agent.core.model_registry import resolve_embedding
 from agent.tools import rag_store
-from agent.tools.chunker import Chunk, make_chunks, split_text
+from agent.tools.chunker import Chunk, make_chunks_from_blocks, split_text
+from agent.tools.mineru_parser import blocks_from_content_list, run_mineru_content_list
 from agent.tools.pdf_fetcher import fetch_pdf
-from agent.tools.pdf_parser import parse_pdf
+
+logger = logging.getLogger(__name__)
 
 
 class IngestError(Exception):
@@ -51,16 +54,49 @@ class IngestResult:
         }
 
 
+# Sub-batch size for embedding. Reading the whole PDF can produce 100s of chunks;
+# sending them all in one request risks exceeding the provider's per-request limits.
+_EMBED_BATCH_SIZE = 64
+
+
 def _embed_texts(texts: list[str], cfg: Config) -> list[list[float]]:
     spec = resolve_embedding(cfg)
     if spec.provider == "openai":
         from agent.tools.openai_embeddings import embed_batch
-        return embed_batch(texts=texts, model=spec.model, base_url=spec.base_url)
+        out: list[list[float]] = []
+        for i in range(0, len(texts), _EMBED_BATCH_SIZE):
+            batch = texts[i : i + _EMBED_BATCH_SIZE]
+            out.extend(embed_batch(texts=batch, model=spec.model, base_url=spec.base_url))
+        return out
     from agent.tools.gemini_embeddings import embed as gemini_embed
     from concurrent.futures import ThreadPoolExecutor
     base_url = spec.base_url or "https://generativelanguage.googleapis.com/v1beta"
-    with ThreadPoolExecutor(max_workers=min(len(texts), 8)) as pool:
+    # Gemini embeds one text per call; cap the pool so huge papers don't spawn 100s of threads.
+    with ThreadPoolExecutor(max_workers=min(max(len(texts), 1), 8)) as pool:
         return list(pool.map(lambda t: gemini_embed(text=t, model=spec.model, base_url=base_url), texts))
+
+
+def _build_metadata_chunk(req: IngestRequest) -> Chunk | None:
+    """A single retrievable chunk holding the paper's bibliographic metadata
+    (title / authors / year / venue) so questions like "who wrote this?",
+    "what year?", "which venue?" have grounding — none of this lives in the PDF
+    body chunks. Abstract is appended too so the metadata chunk is a compact
+    self-contained header.
+    """
+    if not (req.title and req.title.strip()):
+        return None
+    lines = [f"Title: {req.title.strip()}"]
+    if req.authors:
+        lines.append("Authors: " + ", ".join(a for a in req.authors if a and a.strip()))
+    if req.year:
+        lines.append(f"Year: {req.year}")
+    if req.conference and req.conference.strip():
+        lines.append(f"Venue: {req.conference.strip()}")
+    if req.abstract and req.abstract.strip():
+        lines.append(f"Abstract: {req.abstract.strip()}")
+    text = "\n".join(lines)
+    return Chunk(text=text, section="metadata", chunk_index=0,
+                 token_count=len(text) // 4, page=0, block_type="text")
 
 
 def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
@@ -76,23 +112,60 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
     if not req.force and rag_store.is_ingested(req.paper_id):
         return IngestResult(paper_id=req.paper_id, already_done=True, chunk_count=-1, source="cached")
 
-    # 1. Try to fetch + parse PDF
+    # 1. Try to fetch + parse PDF. Prefer the shared Supabase cache (one download
+    #    serves both the Reader iframe and this ingest); fall back to a live fetch
+    #    and populate the cache so the next open is instant.
+    from agent.tools import pdf_store
+    import tempfile
+    from pathlib import Path
+
     source = "abstract"
     chunks: list[Chunk] = []
     pdf_path = None
     try:
-        if req.pdf_url or req.url:
-            pdf_path = fetch_pdf(req.pdf_url or req.url)
+        cached = pdf_store.download_pdf(req.paper_id)
+        if cached:
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+            tmp.write(cached)
+            tmp.close()
+            pdf_path = Path(tmp.name)
+        elif req.pdf_url or req.url:
+            pdf_path = fetch_pdf(req.pdf_url or req.url, title=req.title)
+            if pdf_path:
+                try:
+                    pdf_store.store_pdf_bytes(req.paper_id, pdf_path.read_bytes())
+                except Exception:
+                    pass
         if pdf_path:
-            parsed = parse_pdf(pdf_path)
-            chunks = make_chunks(
-                abstract=parsed.abstract or req.abstract,
-                method=parsed.method,
-                experiments=parsed.experiments,
-                full_text=parsed.text if not (parsed.abstract or parsed.method) else None,
-            )
-            source = "pdf"
-    except Exception:
+            # Prefer a cached MinerU parse (content_list.json) — MinerU on CPU is slow,
+            # so we parse each paper at most once ever and reuse it across re-ingests.
+            content_list = pdf_store.download_parsed_json(req.paper_id)
+            if not content_list:
+                content_list = run_mineru_content_list(
+                    pdf_path,
+                    backend=cfg.mineru_backend,
+                    device=cfg.mineru_device,
+                    lang=cfg.mineru_lang,
+                    model_source=cfg.mineru_model_source,
+                    max_pages=cfg.mineru_max_pages,
+                )
+                try:
+                    pdf_store.store_parsed_json(req.paper_id, content_list)
+                except Exception:
+                    pass
+            blocks = blocks_from_content_list(content_list)
+            # Structure-aware chunking: sections from real headings, tables kept whole,
+            # each chunk tagged with its page for page-level citations.
+            chunks = make_chunks_from_blocks(blocks, abstract=req.abstract)
+            if chunks:
+                source = "pdf"
+        else:
+            logger.warning("ingest %s: không lấy được PDF (fetch trả None) — fallback abstract.", req.paper_id)
+    except Exception as e:
+        # Surface the real cause (e.g. MinerU chưa cài / parse lỗi) instead of a silent
+        # abstract fallback that looks like a download failure.
+        logger.warning("ingest %s: parse/fetch thất bại (%s: %s) — fallback abstract.",
+                       req.paper_id, type(e).__name__, str(e)[:300])
         chunks = []
     finally:
         if pdf_path and pdf_path.exists():
@@ -112,6 +185,14 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
     if not chunks:
         raise IngestError(422, "Không thể tạo chunks — không có PDF hay abstract.")
 
+    # 2b. Prepend a bibliographic metadata chunk (title/authors/year/venue) so
+    #     these facts are retrievable and citable — they live nowhere in the body.
+    meta = _build_metadata_chunk(req)
+    if meta is not None:
+        chunks = [meta] + chunks
+        for i, c in enumerate(chunks):
+            c.chunk_index = i
+
     # 3. Embed all chunks
     texts = [c.text for c in chunks]
     try:
@@ -121,7 +202,9 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
 
     # 4. Store
     rows = [
-        {"chunk_index": c.chunk_index, "section": c.section, "text": c.text, "token_count": c.token_count, "embedding": embeddings[i]}
+        {"chunk_index": c.chunk_index, "section": c.section, "page": c.page,
+         "block_type": c.block_type, "text": c.text, "token_count": c.token_count,
+         "embedding": embeddings[i]}
         for i, c in enumerate(chunks)
     ]
     rag_store.store_chunks(req.paper_id, rows)

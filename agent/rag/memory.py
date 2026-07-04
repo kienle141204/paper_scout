@@ -40,13 +40,10 @@ class WorkingMemory:
         return fresh
 
 
-# Long-term memory (cross-session notes/preferences) is explicitly descoped:
-# agent/tools/library.py's SQLite KV store is a single local file with no
-# user_id scoping, so it can't safely back multi-user server-side long-term
-# memory. Doing this properly needs a new Supabase table keyed by
-# user_id+paper_id, which does not exist yet. The doc marks this tier
-# optional — revisit only if multi-session personalization becomes a real
-# requirement.
+# Long-term memory is local and single-user in this app. The storage helpers
+# live in agent/memory/store.py and are intentionally kept out of this
+# per-request contextualization module so RAG answers never let preferences
+# override paper evidence.
 
 
 def contextualize(question: str, history: list[dict], *, cfg: Config) -> str:

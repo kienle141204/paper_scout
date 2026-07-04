@@ -38,9 +38,9 @@ def _pydantic_field_names(model: type) -> set[str]:
     [
         # `config_path` selects which agent.config.Config to build (resolved
         # before run_search is called, never passed through SearchParams).
-        # `language` is accepted by the request model but currently unused
-        # anywhere in the search pipeline — not a SearchParams concern.
-        (PaperSearchRequest, SearchParams, {"config_path", "language"}, set()),
+        # `record_memory_events` is an internal server-side switch, not a
+        # public request field.
+        (PaperSearchRequest, SearchParams, {"config_path"}, {"record_memory_events"}),
         # `config_path` follows the same "resolved before the dataclass is
         # built" pattern as above. `history` is present on both sides but
         # gets converted from list[ChatMessageModel] to list[dict] in transit.

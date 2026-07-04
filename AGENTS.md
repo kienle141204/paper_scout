@@ -8,16 +8,22 @@ PaperScout is a Python/FastAPI backend with a React/TypeScript frontend.
 - `backend/api.py` is the FastAPI application and currently owns all HTTP endpoints. It converts Pydantic request models into the harness's plain dataclasses (e.g. `SearchParams`, `RagAskParams`) before calling into `agent/` — keep `agent/` itself FastAPI-free.
 - `frontend/src/components/` contains reusable UI pieces, `frontend/src/screens/` contains page-level views, and `frontend/src/services/api.ts` centralizes API calls.
 - `frontend/src/types/` holds shared TypeScript models.
-- `docker-compose.yml` starts the application stack.
+- `run.py` (repo root) is the one-command launcher — it starts the backend and frontend together for local use. This is a single-user local research assistant: no auth, no deployment.
 
 Keep backend transport code in `backend/api.py` and reusable behavior in `agent/`.
 
 ## Build, Test, and Development Commands
 
-Run the backend from the **repository root** — `agent/` is imported as `agent.*` and must be on the Python path; running `uvicorn` from inside `backend/` without installing the package first will raise `ModuleNotFoundError: agent`:
+The normal way to run everything is one command from the repository root:
 
 ```bash
-pip install -r backend/requirements.txt
+python run.py     # first-run: pip install -e . + npm install; then backend :8000 + frontend :5173
+```
+
+To run pieces manually, start the backend from the **repository root** — `agent/` is imported as `agent.*` and must be on the Python path; running `uvicorn` from inside `backend/` without installing the package first will raise `ModuleNotFoundError: agent`:
+
+```bash
+pip install -e .          # or: pip install -r backend/requirements.txt
 uvicorn backend.api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -30,7 +36,7 @@ npm run build     # Type-check and create the production bundle
 npm run preview   # Serve the production bundle locally
 ```
 
-From the repository root, `pip install -e .` installs the CLI. Use `paper-agent init` to create a sample `config.toml`. Run the full stack with `docker-compose up --build`.
+`pip install -e .` also installs the `paper-agent` CLI; use `paper-agent init` to create a sample `config.toml`. The shared paper DB (Supabase) is preconfigured in `agent/tools/shared_supabase.py`, so no database setup is needed to run.
 
 ## Coding Style & Naming Conventions
 

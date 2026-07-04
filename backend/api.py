@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -12,43 +11,9 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
-import bcrypt as _bcrypt_lib
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from jose import JWTError, jwt as _jwt
 from pydantic import BaseModel, Field
-
-# ── JWT / Auth helpers ────────────────────────────────────────────────────────
-
-_JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-in-prod")
-_JWT_ALGORITHM = "HS256"
-_JWT_EXPIRE_DAYS = 30
-
-
-def _hash_password(plain: str) -> str:
-    return _bcrypt_lib.hashpw(plain.encode("utf-8"), _bcrypt_lib.gensalt()).decode("utf-8")
-
-
-def _verify_password(plain: str, hashed: str) -> bool:
-    return _bcrypt_lib.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-
-
-def _create_token(user_id: str, email: str) -> str:
-    exp = datetime.now(timezone.utc) + timedelta(days=_JWT_EXPIRE_DAYS)
-    return _jwt.encode({"sub": user_id, "email": email, "exp": exp}, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
-
-
-def _decode_token(token: str) -> dict:
-    return _jwt.decode(token, _JWT_SECRET, algorithms=[_JWT_ALGORITHM])
-
-
-def _get_current_user(authorization: str = Header(...)) -> dict:
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid token")
-    try:
-        return _decode_token(authorization[7:])
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 from agent.config import DEFAULT_CONFIG_PATH, load_config
 from agent.tools.abstract_tools import summarize_abstract, translate_abstract_vi
@@ -68,6 +33,14 @@ from agent.tools.library import (
     update_note,
     update_tags,
 )
+from agent.memory.store import (
+    LOCAL_USER_ID,
+    append_memory_event,
+    delete_all_memory,
+    delete_topic,
+    list_memory,
+    patch_preferences,
+)
 from agent.tools.major_venues import MAJOR_VENUES, major_search
 from agent.tools.paper_cache import get_cached_analysis, get_cached_paper, is_configured, upsert_analysis, upsert_paper
 from agent.tools.paper_detail import fetch_detail
@@ -75,6 +48,7 @@ from agent.tools.paper_search import search_papers, search_by_invitation
 from agent.tools.web_fetch import fetch_paper_from_url
 from agent.search.state import SearchParams
 from agent.search.agent import run_search
+from agent.search.related import RelatedPaperParams, recommend_related_papers
 
 # ── Conference metadata ───────────────────────────────────────────────────────
 
@@ -103,8 +77,8 @@ _bg_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bg_")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -118,159 +92,6 @@ def root() -> dict[str, str]:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-# ── Supabase client for auth (separate from paper_cache singleton) ─────────────
-
-def _supabase_client():
-    """Return a Supabase client for auth operations using service role key (bypasses RLS).
-    Falls back to anon key if service role key is not set — in that case run:
-      ALTER TABLE app_users DISABLE ROW LEVEL SECURITY;
-    in the Supabase SQL editor.
-    """
-    url = os.environ.get("SUPABASE_URL")
-    # Service role key bypasses RLS — required for server-side auth operations
-    key = (
-        os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-        or os.environ.get("SUPABASE_ANON_KEY")
-        or os.environ.get("SUPABASE_KEY")
-    )
-    if not url or not key:
-        return None
-    try:
-        from supabase import create_client
-        return create_client(url, key)
-    except Exception:
-        return None
-
-
-# ── Auth Pydantic models ──────────────────────────────────────────────────────
-
-class RegisterRequest(BaseModel):
-    email: str
-    password: str
-    display_name: str | None = None
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class UpdateMeRequest(BaseModel):
-    language_pref: Literal['en', 'vi'] | None = None
-    display_name: str | None = None
-
-
-# ── Auth endpoints ────────────────────────────────────────────────────────────
-
-@app.post("/auth/register")
-def auth_register(req: RegisterRequest) -> dict:
-    if '@' not in req.email or len(req.email) < 5:
-        raise HTTPException(400, "Invalid email")
-    if len(req.password) < 8:
-        raise HTTPException(400, "Password too short")
-
-    client = _supabase_client()
-    if not client:
-        raise HTTPException(503, "Database not configured")
-
-    existing = client.table("app_users").select("id").eq("email", req.email.lower()).execute()
-    if existing.data:
-        raise HTTPException(409, "Email already registered")
-
-    hashed = _hash_password(req.password)
-    result = client.table("app_users").insert({
-        "email": req.email.lower(),
-        "password_hash": hashed,
-        "display_name": req.display_name,
-        "language_pref": "en",
-    }).execute()
-
-    user = result.data[0]
-    token = _create_token(user["id"], user["email"])
-    return {
-        "token": token,
-        "user": {
-            "id": user["id"],
-            "email": user["email"],
-            "display_name": user.get("display_name"),
-            "language_pref": user.get("language_pref", "en"),
-        }
-    }
-
-
-@app.post("/auth/login")
-def auth_login(req: LoginRequest) -> dict:
-    client = _supabase_client()
-    if not client:
-        raise HTTPException(503, "Database not configured")
-
-    result = client.table("app_users").select("*").eq("email", req.email.lower()).execute()
-    if not result.data:
-        raise HTTPException(401, "Invalid credentials")
-
-    user = result.data[0]
-    if not _verify_password(req.password, user["password_hash"]):
-        raise HTTPException(401, "Invalid credentials")
-
-    token = _create_token(user["id"], user["email"])
-    return {
-        "token": token,
-        "user": {
-            "id": user["id"],
-            "email": user["email"],
-            "display_name": user.get("display_name"),
-            "language_pref": user.get("language_pref", "en"),
-        }
-    }
-
-
-@app.get("/auth/me")
-def auth_me(current_user: dict = Depends(_get_current_user)) -> dict:
-    client = _supabase_client()
-    if not client:
-        raise HTTPException(503, "Database not configured")
-
-    result = client.table("app_users").select("id,email,display_name,language_pref").eq("id", current_user["sub"]).execute()
-    if not result.data:
-        raise HTTPException(404, "User not found")
-
-    user = result.data[0]
-    return {
-        "id": user["id"],
-        "email": user["email"],
-        "display_name": user.get("display_name"),
-        "language_pref": user.get("language_pref", "en"),
-    }
-
-
-@app.patch("/auth/me")
-def auth_update_me(req: UpdateMeRequest, current_user: dict = Depends(_get_current_user)) -> dict:
-    client = _supabase_client()
-    if not client:
-        raise HTTPException(503, "Database not configured")
-
-    updates: dict = {}
-    if req.language_pref is not None:
-        updates["language_pref"] = req.language_pref
-    if req.display_name is not None:
-        updates["display_name"] = req.display_name
-
-    if not updates:
-        raise HTTPException(400, "No fields to update")
-
-    result = client.table("app_users").update(updates).eq("id", current_user["sub"]).execute()
-    if not result.data:
-        raise HTTPException(404, "User not found")
-
-    user = result.data[0]
-    return {
-        "id": user["id"],
-        "email": user["email"],
-        "display_name": user.get("display_name"),
-        "language_pref": user.get("language_pref", "en"),
-    }
 
 
 @lru_cache(maxsize=8)
@@ -758,6 +579,9 @@ class PaperSearchRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     corrected_query: str | None = None
     include_synthesis: bool = False
+    session_id: str | None = None
+    sources: list[str] | None = Field(default_factory=lambda: ["openreview"])
+    use_cache: bool = True
     config_path: str | None = None
 
 
@@ -766,8 +590,11 @@ def api_papers_search(req: PaperSearchRequest) -> dict[str, Any]:
     cfg = _cfg(req.config_path)
     params = SearchParams(
         query=req.query, keyword_variants=req.keyword_variants, conferences=req.conferences,
-        year_from=req.year_from, year_to=req.year_to, limit=req.limit, offset=req.offset,
+        year_from=req.year_from, year_to=req.year_to, language=req.language,
+        limit=req.limit, offset=req.offset,
         corrected_query=req.corrected_query, include_synthesis=req.include_synthesis,
+        session_id=req.session_id, sources=["openreview"], use_cache=req.use_cache,
+        record_memory_events=True,
     )
     try:
         result = run_search(params, cfg=cfg)
@@ -775,6 +602,45 @@ def api_papers_search(req: PaperSearchRequest) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail="Nguồn dữ liệu phản hồi lỗi. Vui lòng thử lại sau.")
     except requests.RequestException:
         raise HTTPException(status_code=502, detail="Không thể kết nối nguồn dữ liệu. Vui lòng kiểm tra mạng.")
+    body = result.to_response_dict()
+    if not result.refused:
+        try:
+            append_memory_event(
+                event_type="search",
+                query=req.query,
+                metadata={"session_id": result.session_id, "normalized_query": result.query, "total": result.total},
+            )
+        except Exception:
+            pass
+    return body
+
+
+class RelatedPaperRequest(BaseModel):
+    focus_paper_id: str
+    current_session_id: str | None = None
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    limit: int = Field(default=3, ge=1, le=5)
+    config_path: str | None = None
+
+
+@app.post("/api/papers/related")
+def api_papers_related(req: RelatedPaperRequest) -> dict[str, Any]:
+    cfg = _cfg(req.config_path)
+    params = RelatedPaperParams(
+        focus_paper_id=req.focus_paper_id,
+        current_session_id=req.current_session_id,
+        candidates=req.candidates,
+        limit=req.limit,
+    )
+    result = recommend_related_papers(params, cfg=cfg)
+    try:
+        append_memory_event(
+            event_type="click_paper",
+            paper_id=req.focus_paper_id,
+            metadata={"session_id": req.current_session_id, "related_count": len(result.related)},
+        )
+    except Exception:
+        pass
     return result.to_response_dict()
 
 
@@ -1083,7 +949,12 @@ async def api_papers_pdf_parse(file: UploadFile = File(...), max_pages: int | No
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             temp_path = Path(tmp.name)
             tmp.write(await file.read())
-        result = parse_pdf(temp_path, max_pages=max_pages)
+        c = _cfg()
+        result = parse_pdf(
+            temp_path, max_pages=max_pages,
+            backend=c.mineru_backend, device=c.mineru_device, lang=c.mineru_lang,
+            model_source=c.mineru_model_source,
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
@@ -1117,25 +988,73 @@ def _is_safe_pdf_url(url: str) -> bool:
     return True
 
 
+@app.get("/api/papers/pdf/resolve")
+def api_papers_pdf_resolve(
+    url: str | None = None, title: str | None = None, paper_id: str | None = None
+) -> dict[str, Any]:
+    """Tell the frontend whether an embeddable PDF exists for this paper before it
+    commits to an <iframe>. Returns {"embeddable": bool, "url": <embeddable url|None>}.
+
+    A cached copy in Supabase Storage wins first (works even for OpenReview-only
+    papers with no open-access mirror). Otherwise, for OpenReview links (which
+    block framing + anonymous fetch) this triggers the arXiv/OA-by-title lookup;
+    the frontend embeds the returned url via the proxy, or shows the reading-view
+    fallback when embeddable is False."""
+    from agent.tools.pdf_fetcher import resolve_embeddable_url
+    from agent.tools import pdf_store
+
+    if paper_id and pdf_store.cached_pdf_url(paper_id):
+        return {"embeddable": True, "url": url or pdf_store.public_url(paper_id)}
+
+    resolved = resolve_embeddable_url(url, title)
+    return {"embeddable": resolved is not None, "url": resolved}
+
+
 @app.get("/api/papers/pdf/proxy")
-def api_papers_pdf_proxy(url: str) -> Any:
+def api_papers_pdf_proxy(url: str, title: str | None = None, paper_id: str | None = None) -> Any:
     """Stream a paper's PDF through our backend so the frontend <iframe> can
     embed it regardless of the source's X-Frame-Options/CORS policy — those
-    only restrict browsers, not our server-side fetch_pdf() call."""
-    from fastapi.responses import FileResponse
+    only restrict browsers, not our server-side fetch_pdf() call.
+
+    When *paper_id* is given, a Supabase-cached copy is redirected to (served from
+    the CDN, frames inline) and every fresh fetch is uploaded to the cache
+    fire-and-forget. *title* enables an arXiv/OA fallback when the primary source
+    (e.g. OpenReview) blocks anonymous PDF downloads."""
+    from fastapi.responses import FileResponse, RedirectResponse
     from starlette.background import BackgroundTask
     from agent.tools.pdf_fetcher import fetch_pdf
+    from agent.tools import pdf_store
+
+    # Cache hit → redirect to the public Supabase URL (inline + frameable).
+    if paper_id:
+        cached = pdf_store.cached_pdf_url(paper_id)
+        if cached:
+            return RedirectResponse(cached, status_code=307)
 
     if not _is_safe_pdf_url(url):
         raise HTTPException(status_code=400, detail="Invalid or disallowed url")
 
-    pdf_path = fetch_pdf(url)
+    pdf_path = fetch_pdf(url, title=title)
     if not pdf_path:
         raise HTTPException(status_code=404, detail="Could not fetch a valid PDF from this url")
 
+    # Populate the shared cache off the request path so the next open (any user)
+    # is a CDN redirect. Read bytes now; the temp file is deleted after streaming.
+    if paper_id:
+        try:
+            _bg_pool.submit(pdf_store.store_pdf_bytes, paper_id, pdf_path.read_bytes())
+        except Exception:
+            pass
+
+    # `inline` (not the FileResponse default `attachment`) tells the browser to
+    # render the PDF in the <iframe> instead of downloading it. X-Frame-Options
+    # is left unset so the same-origin iframe can frame it. `Content-Length` from
+    # FileResponse lets the built-in PDF viewer show a progress bar.
     return FileResponse(
         pdf_path,
         media_type="application/pdf",
+        content_disposition_type="inline",
+        filename="paper.pdf",
         background=BackgroundTask(lambda: pdf_path.unlink(missing_ok=True)),
     )
 
@@ -1305,6 +1224,37 @@ def profile_get(req: ProfileGetRequest) -> dict[str, Any]:
     return {"profile": get_profile(Path(req.db_path) if req.db_path else DEFAULT_DB_PATH)}
 
 
+# ── Local memory API ─────────────────────────────────────────────────────────
+
+
+class MemoryPatchRequest(BaseModel):
+    preferences: dict[str, Any] = Field(default_factory=dict)
+    db_path: str | None = None
+
+
+@app.get("/api/memory/me")
+def memory_me() -> dict[str, Any]:
+    return list_memory(user_id=LOCAL_USER_ID)
+
+
+@app.patch("/api/memory/preferences")
+def memory_patch(req: MemoryPatchRequest) -> dict[str, Any]:
+    patch_preferences(req.preferences, db_path=Path(req.db_path) if req.db_path else DEFAULT_DB_PATH)
+    return {"ok": True}
+
+
+@app.delete("/api/memory/topics/{topic_id}")
+def memory_delete_topic(topic_id: str) -> dict[str, Any]:
+    delete_topic(topic_id)
+    return {"ok": True}
+
+
+@app.delete("/api/memory/me")
+def memory_delete_all() -> dict[str, Any]:
+    delete_all_memory(user_id=LOCAL_USER_ID)
+    return {"ok": True}
+
+
 # ── RAG paper agent ───────────────────────────────────────────────────────────
 
 from agent.tools.rag_store import is_configured as rag_configured
@@ -1312,6 +1262,8 @@ from agent.tools.rag_store import is_ingested as rag_is_ingested
 from agent.rag.ingest import IngestError, ingest_paper
 from agent.rag.ingest import IngestRequest as _IngestArgs
 from agent.rag.agent import RagAskParams, run_rag_ask
+from agent.rag.notion_export import ExportOptions, export_paper_note
+from agent.tools.notion_client import NotionConfigError
 
 
 @app.get("/api/agent/status")
@@ -1319,10 +1271,18 @@ def api_agent_status(paper_id: str | None = None) -> dict[str, Any]:
     status: dict[str, Any] = {
         "paper_cache_configured": is_configured(),
         "vector_store_configured": rag_configured(),
+        "ocr_backend": _cfg().mineru_backend,
+        "mineru_available": _mineru_available(),
     }
     if paper_id:
         status["paper_ingested"] = rag_is_ingested(paper_id)
     return status
+
+
+def _mineru_available() -> bool:
+    """True if the MinerU binary is on PATH (models may still download on first use)."""
+    import shutil
+    return shutil.which("mineru") is not None
 
 
 class IngestRequest(BaseModel):
@@ -1397,4 +1357,51 @@ def api_papers_ask(req: RagAskRequest) -> dict[str, Any]:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     if result.refused and not result.answer and not result.chunks:
         raise HTTPException(status_code=404, detail=result.refusal_reason or "Câu hỏi không hợp lệ.")
+    try:
+        append_memory_event(
+            event_type="ask_question",
+            paper_id=req.paper_id,
+            query=req.question,
+            metadata={"action": result.action, "suggested_query": result.suggested_query},
+        )
+    except Exception:
+        pass
+    return result.to_response_dict()
+
+
+class NotionExportRequest(BaseModel):
+    paper_id: str
+    note_type: Literal["summary", "qa", "full_reading_note"] = "summary"
+    include_qa_history: bool = False
+    target_database_id: str | None = None
+    target_page_id: str | None = None
+    paper: dict[str, Any] | None = None
+    qa_history: list[ChatMessageModel] = Field(default_factory=list)
+
+
+@app.post("/api/papers/export/notion")
+def api_papers_export_notion(req: NotionExportRequest) -> dict[str, Any]:
+    options = ExportOptions(
+        paper_id=req.paper_id,
+        note_type=req.note_type,
+        include_qa_history=req.include_qa_history,
+        target_database_id=req.target_database_id,
+        target_page_id=req.target_page_id,
+        paper=req.paper,
+        qa_history=[{"role": m.role, "content": m.content} for m in req.qa_history],
+    )
+    try:
+        result = export_paper_note(options)
+    except NotionConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Notion export failed: {e}")
+    try:
+        append_memory_event(
+            event_type="export_notion",
+            paper_id=req.paper_id,
+            metadata={"notion_page_id": result.notion_page_id, "note_type": req.note_type},
+        )
+    except Exception:
+        pass
     return result.to_response_dict()
