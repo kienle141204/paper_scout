@@ -169,7 +169,7 @@ def run_rag_ask(params: RagAskParams, *, cfg: Config, session_id: str | None = N
             warning="budget_exceeded",
         )
 
-    grounding = tools.check_grounded(result.answer, result.chunks_used, cfg=cfg, question=params.question)
+    grounding = tools.check_grounded(result.answer, result.chunks_used, cfg=cfg, question=state.standalone_query or params.question)
     final = guardrails.output_guardrail(result, grounding, question=params.question)
     trace.guardrails["grounded"] = grounding.is_grounded
     trace.outcome = trace.outcome or ("answered" if final.warning != "refused_ungrounded" else "refused")

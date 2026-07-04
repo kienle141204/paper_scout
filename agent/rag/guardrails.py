@@ -40,19 +40,28 @@ def _is_vietnamese(text: str) -> bool:
 
 
 def output_guardrail(result: AnswerResult, grounding: GroundingResult, *, question: str = "") -> AnswerResult:
-    """Deterministic — no LLM call. Refuses with a fixed message instead of
-    fabricating when the answer isn't grounded (doc §4.9: refuse consistently
-    rather than fabricate).
+    """Deterministic — no LLM call. Prefers to *show* the answer (optionally the
+    verifier's cleaned-up ``refined_answer``) with a soft warning rather than
+    nuke it. Only hard-refuses on a genuine high-risk fabrication that the
+    verifier could not ground — everything else is surfaced to the user, letting
+    the frontend's VerificationBadge flag medium/high risk (doc §4.9: warn, don't
+    over-refuse).
     """
-    if not grounding.is_grounded or grounding.hallucination_risk in ("medium", "high"):
+    # Hard refuse only when the answer is BOTH fabricated-level risky AND
+    # untraceable to any chunk. A high-risk answer that is still grounded, or a
+    # medium-risk one, is kept (cleaned up if the verifier offered a rewrite).
+    if grounding.hallucination_risk == "high" and not grounding.is_grounded:
         refusal = _REFUSAL_VI if _is_vietnamese(question or result.answer) else _REFUSAL_EN
         return AnswerResult(
             answer=refusal, citations=[], chunks_used=result.chunks_used,
             confidence="low", coverage="insufficient", warning="refused_ungrounded",
         )
 
+    # medium/high-but-grounded: prefer the verifier's cleaned answer, keep
+    # citations, and flag it so the badge shows.
+    warn = "grounding_warning" if grounding.hallucination_risk in ("medium", "high") else None
     answer_text = grounding.refined_answer or result.answer
     return AnswerResult(
         answer=answer_text, citations=result.citations, chunks_used=result.chunks_used,
-        confidence=result.confidence, coverage=result.coverage,
+        confidence=result.confidence, coverage=result.coverage, warning=warn,
     )

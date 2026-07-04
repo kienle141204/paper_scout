@@ -53,6 +53,8 @@ def _extract_results(state: RAGState, cfg: Config) -> AnswerResult:
 
 def _compare_baselines(state: RAGState, cfg: Config) -> AnswerResult:
     chunks = tools.get_section(state.paper_id, "results", k=4) + tools.get_section(state.paper_id, "related", k=4)
+    if len(chunks) < 2:
+        chunks += tools.retrieve(state.standalone_query or state.question, state.paper_id, k=6, cfg=cfg)
     return tools.generate(state.question, chunks, state.history, cfg=cfg, component="skill")
 
 

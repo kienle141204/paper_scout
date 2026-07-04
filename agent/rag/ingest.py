@@ -76,6 +76,29 @@ def _embed_texts(texts: list[str], cfg: Config) -> list[list[float]]:
         return list(pool.map(lambda t: gemini_embed(text=t, model=spec.model, base_url=base_url), texts))
 
 
+def _build_metadata_chunk(req: IngestRequest) -> Chunk | None:
+    """A single retrievable chunk holding the paper's bibliographic metadata
+    (title / authors / year / venue) so questions like "who wrote this?",
+    "what year?", "which venue?" have grounding — none of this lives in the PDF
+    body chunks. Abstract is appended too so the metadata chunk is a compact
+    self-contained header.
+    """
+    if not (req.title and req.title.strip()):
+        return None
+    lines = [f"Title: {req.title.strip()}"]
+    if req.authors:
+        lines.append("Authors: " + ", ".join(a for a in req.authors if a and a.strip()))
+    if req.year:
+        lines.append(f"Year: {req.year}")
+    if req.conference and req.conference.strip():
+        lines.append(f"Venue: {req.conference.strip()}")
+    if req.abstract and req.abstract.strip():
+        lines.append(f"Abstract: {req.abstract.strip()}")
+    text = "\n".join(lines)
+    return Chunk(text=text, section="metadata", chunk_index=0,
+                 token_count=len(text) // 4, page=0, block_type="text")
+
+
 def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
     """Download, parse, chunk, embed and store a paper for RAG.
 
@@ -161,6 +184,14 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
 
     if not chunks:
         raise IngestError(422, "Không thể tạo chunks — không có PDF hay abstract.")
+
+    # 2b. Prepend a bibliographic metadata chunk (title/authors/year/venue) so
+    #     these facts are retrievable and citable — they live nowhere in the body.
+    meta = _build_metadata_chunk(req)
+    if meta is not None:
+        chunks = [meta] + chunks
+        for i, c in enumerate(chunks):
+            c.chunk_index = i
 
     # 3. Embed all chunks
     texts = [c.text for c in chunks]
