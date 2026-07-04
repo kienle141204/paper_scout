@@ -124,6 +124,7 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
                     device=cfg.mineru_device,
                     lang=cfg.mineru_lang,
                     model_source=cfg.mineru_model_source,
+                    max_pages=cfg.mineru_max_pages,
                 )
                 try:
                     pdf_store.store_parsed_json(req.paper_id, content_list)

@@ -75,6 +75,7 @@ def run_mineru(
     device: str = "cpu",
     lang: str = "en",
     model_source: str | None = None,
+    max_pages: int | None = None,
     timeout: int = 900,
 ) -> list[Block]:
     """Parse *path* with MinerU and return normalized blocks in reading order.
@@ -83,7 +84,7 @@ def run_mineru(
     """
     raw = run_mineru_content_list(
         path, backend=backend, device=device, lang=lang,
-        model_source=model_source, timeout=timeout,
+        model_source=model_source, max_pages=max_pages, timeout=timeout,
     )
     return blocks_from_content_list(raw)
 
@@ -95,12 +96,14 @@ def run_mineru_content_list(
     device: str = "cpu",
     lang: str = "en",
     model_source: str | None = None,
+    max_pages: int | None = None,
     timeout: int = 900,
 ) -> list[dict]:
     """Parse *path* with MinerU and return the raw content_list.json (list of dicts).
 
-    Callers can cache this cheaply and re-derive Blocks via ``blocks_from_content_list``
-    without re-running MinerU. Raises MineruError on failure.
+    ``max_pages`` limits parsing to the first N pages (0..N-1) — papers are short and
+    CPU parsing is slow, so this bounds latency. Callers can cache this cheaply and
+    re-derive Blocks via ``blocks_from_content_list``. Raises MineruError on failure.
     """
     cmd = _mineru_cmd()
     env = dict(os.environ)
@@ -111,6 +114,8 @@ def run_mineru_content_list(
     with tempfile.TemporaryDirectory(prefix="mineru_") as tmp:
         out_dir = Path(tmp)
         full = cmd + ["-p", str(path), "-o", str(out_dir), "-b", backend, "-l", lang]
+        if max_pages and max_pages > 0:
+            full += ["-s", "0", "-e", str(max_pages - 1)]  # 0-based inclusive end
         try:
             proc = subprocess.run(
                 full, env=env, timeout=timeout,

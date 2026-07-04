@@ -28,6 +28,7 @@ class Config:
     mineru_device: str = "cpu"         # cpu | cuda
     mineru_lang: str = "en"
     mineru_model_source: str = "huggingface"  # huggingface | modelscope (dùng khi HF bị chặn/chập chờn)
+    mineru_max_pages: int = 10  # chỉ OCR N trang đầu (paper thường ~10 trang) — CPU chậm nên giới hạn
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
@@ -61,6 +62,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
         mineru_device=parser.get("mineru_device", "cpu"),
         mineru_lang=parser.get("mineru_lang", "en"),
         mineru_model_source=parser.get("mineru_model_source", "huggingface"),
+        mineru_max_pages=int(parser.get("mineru_max_pages", 10) or 0),
     )
 
 
@@ -99,6 +101,7 @@ mineru_backend = "pipeline"   # pipeline = CPU; đổi "vlm-transformers" nếu 
 mineru_device = "cpu"          # cpu | cuda
 mineru_lang = "en"
 mineru_model_source = "huggingface"   # đổi "modelscope" nếu Hugging Face bị chặn/chập chờn (VN)
+mineru_max_pages = 10                  # chỉ OCR 10 trang đầu (0 = toàn bộ). CPU chậm nên giới hạn.
 """,
         encoding="utf-8",
     )

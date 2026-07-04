@@ -40,14 +40,15 @@ class PdfParseResult:
 def parse_pdf(
     path: Path,
     *,
-    max_pages: int | None = None,  # kept for API compat; MinerU parses the whole doc
+    max_pages: int | None = None,  # limit to first N pages (0 / None = whole doc)
     backend: str = "pipeline",
     device: str = "cpu",
     lang: str = "en",
     model_source: str | None = None,
 ) -> PdfParseResult:
     blocks = run_mineru(
-        path, backend=backend, device=device, lang=lang, model_source=model_source
+        path, backend=backend, device=device, lang=lang,
+        model_source=model_source, max_pages=max_pages,
     )
     return result_from_blocks(blocks)
 
