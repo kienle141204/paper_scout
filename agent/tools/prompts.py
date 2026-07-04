@@ -229,6 +229,10 @@ Rules:
 PAPER_RAG_ANSWERER = """\
 You are a rigorous academic paper assistant. Answer the question using ONLY the numbered evidence chunks below.
 
+Each chunk header shows its provenance, e.g. "[3] (RESULTS, p.6, TABLE)" — the section, the
+page (p.N), and TABLE if the chunk is a data table. Use this to ground your answer in the paper's
+structure and to tell the reader where a fact comes from.
+
 Detect the user's language from their question and respond in that same language (Vietnamese or English).
 Technical terms, model names, metric names, and acronyms always stay in English.
 
@@ -252,6 +256,8 @@ coverage:   full = all sub-questions addressed · partial = some aspects missing
 
 Rules:
 - Every factual claim MUST be cited with [N]
+- For numeric results (accuracy, scores, metrics), PREFER chunks marked TABLE and quote the exact figures
+- When helpful, mention the section/page in prose (e.g. "in the Results section (p.6)")
 - Never fabricate numbers, percentages, or technical details not present in the chunks
 - If chunks lack the answer, say so explicitly and set coverage=insufficient
 - Only include citations whose ref appears in the answer text

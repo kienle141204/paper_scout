@@ -2,6 +2,7 @@ export interface RagCitation {
   ref: number
   chunk_index: number
   section: string
+  page?: number | null
   quote: string
   valid?: boolean
 }
@@ -9,6 +10,8 @@ export interface RagCitation {
 export interface RagChunk {
   chunk_index: number
   section: string
+  page?: number | null
+  block_type?: string
   text: string
 }
 

@@ -22,6 +22,11 @@ class Config:
     gemini_cheap_model: str = "gemini-2.0-flash-lite"
     gemini_analysis_model: str = "gemini-2.5-pro"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    # PDF parser (RAG ingest). MinerU = structure-aware OCR/layout for scientific papers.
+    pdf_parser: str = "mineru"
+    mineru_backend: str = "pipeline"   # pipeline (CPU) | vlm-transformers (GPU)
+    mineru_device: str = "cpu"         # cpu | cuda
+    mineru_lang: str = "en"
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
@@ -38,6 +43,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
     llm = data.get("llm", {}) if isinstance(data, dict) else {}
     openai = data.get("openai", {}) if isinstance(data, dict) else {}
     gemini = data.get("gemini", {}) if isinstance(data, dict) else {}
+    parser = data.get("parser", {}) if isinstance(data, dict) else {}
     return Config(
         openalex_email=(openalex.get("email") or None),
         llm_provider=llm.get("provider", "openai"),
@@ -49,6 +55,10 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
         gemini_cheap_model=gemini.get("cheap_model", "gemini-2.0-flash-lite"),
         gemini_analysis_model=gemini.get("analysis_model", "gemini-2.5-pro"),
         gemini_base_url=gemini.get("base_url", "https://generativelanguage.googleapis.com/v1beta"),
+        pdf_parser=parser.get("parser", "mineru"),
+        mineru_backend=parser.get("mineru_backend", "pipeline"),
+        mineru_device=parser.get("mineru_device", "cpu"),
+        mineru_lang=parser.get("mineru_lang", "en"),
     )
 
 
@@ -79,6 +89,13 @@ model = "gemini-2.5-flash"              # standard
 cheap_model = "gemini-2.0-flash-lite"   # cheap
 analysis_model = "gemini-2.5-pro"       # premium
 base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+[parser]
+# PDF parser cho RAG ingest. MinerU trích cấu trúc (section/bảng/công thức) cho bài báo khoa học.
+parser = "mineru"
+mineru_backend = "pipeline"   # pipeline = CPU; đổi "vlm-transformers" nếu có GPU NVIDIA
+mineru_device = "cpu"          # cpu | cuda
+mineru_lang = "en"
 """,
         encoding="utf-8",
     )

@@ -56,7 +56,7 @@ class RagAskResult:
         return {
             "answer": self.answer,
             "citations": self.citations,
-            "chunks": [{"chunk_index": c.get("chunk_index"), "section": c.get("section", "body"), "text": (c.get("text") or "")[:500]} for c in self.chunks],
+            "chunks": [{"chunk_index": c.get("chunk_index"), "section": c.get("section", "body"), "page": c.get("page"), "block_type": c.get("block_type", "text"), "text": (c.get("text") or "")[:500]} for c in self.chunks],
             "confidence": self.confidence,
             "coverage": self.coverage,
             "plan": self.plan,

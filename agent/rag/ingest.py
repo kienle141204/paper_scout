@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from agent.config import Config
 from agent.core.model_registry import resolve_embedding
 from agent.tools import rag_store
-from agent.tools.chunker import Chunk, make_chunks, split_text
+from agent.tools.chunker import Chunk, make_chunks_from_blocks, split_text
+from agent.tools.mineru_parser import blocks_from_content_list, run_mineru_content_list
 from agent.tools.pdf_fetcher import fetch_pdf
-from agent.tools.pdf_parser import parse_pdf
 
 
 class IngestError(Exception):
@@ -111,13 +111,24 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
                 except Exception:
                     pass
         if pdf_path:
-            parsed = parse_pdf(pdf_path)  # max_pages=None → reads every page
-            # Index the full paper text (all pages, all sections). split_text tags
-            # each chunk with its section, so nothing beyond abstract/method is lost.
-            chunks = make_chunks(
-                full_text=parsed.text,
-                abstract=parsed.abstract or req.abstract,
-            )
+            # Prefer a cached MinerU parse (content_list.json) — MinerU on CPU is slow,
+            # so we parse each paper at most once ever and reuse it across re-ingests.
+            content_list = pdf_store.download_parsed_json(req.paper_id)
+            if not content_list:
+                content_list = run_mineru_content_list(
+                    pdf_path,
+                    backend=cfg.mineru_backend,
+                    device=cfg.mineru_device,
+                    lang=cfg.mineru_lang,
+                )
+                try:
+                    pdf_store.store_parsed_json(req.paper_id, content_list)
+                except Exception:
+                    pass
+            blocks = blocks_from_content_list(content_list)
+            # Structure-aware chunking: sections from real headings, tables kept whole,
+            # each chunk tagged with its page for page-level citations.
+            chunks = make_chunks_from_blocks(blocks, abstract=req.abstract)
             if chunks:
                 source = "pdf"
     except Exception:
@@ -149,7 +160,9 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
 
     # 4. Store
     rows = [
-        {"chunk_index": c.chunk_index, "section": c.section, "text": c.text, "token_count": c.token_count, "embedding": embeddings[i]}
+        {"chunk_index": c.chunk_index, "section": c.section, "page": c.page,
+         "block_type": c.block_type, "text": c.text, "token_count": c.token_count,
+         "embedding": embeddings[i]}
         for i, c in enumerate(chunks)
     ]
     rag_store.store_chunks(req.paper_id, rows)

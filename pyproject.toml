@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
   "requests>=2.31.0",
   "feedparser>=6.0.11",
-  "pypdf>=4.2.0",
+  "mineru[core]>=2.0",  # structure-aware PDF parsing (layout/table/formula); replaces pypdf. Heavy (torch); CPU pipeline backend.
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.30.0",
   "supabase>=2.31.0",  # >=2.16 accepts new sb_publishable_/sb_secret_ keys (2.15 rejects them); 2.31 verified

@@ -215,6 +215,7 @@ export function MessageContent({
             style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '.05em' }}
           >
             [{activeCitation.ref}] {activeCitation.section}
+            {activeCitation.page != null ? ` · tr.${activeCitation.page + 1}` : ''}
           </span>
           <p style={{ margin: '4px 0 0', fontStyle: 'italic' }}>
             "{activeCitation.quote}"

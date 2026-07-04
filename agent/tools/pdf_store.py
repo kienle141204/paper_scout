@@ -115,3 +115,46 @@ def download_pdf(paper_id: str) -> bytes | None:
         return data if data and data[:4] == b"%PDF" else None
     except Exception:
         return None
+
+
+def _json_object_key(paper_id: str) -> str:
+    """Storage key for a paper's cached MinerU content_list.json (same bucket)."""
+    digest = hashlib.sha1(paper_id.encode("utf-8")).hexdigest()[:10]
+    slug = _SAFE.sub("_", paper_id).strip("_")[:60] or "paper"
+    return f"{slug}_{digest}.content_list.json"
+
+
+def store_parsed_json(paper_id: str, content_list: list | dict) -> bool:
+    """Cache MinerU's content_list output so re-ingest skips the (slow) parse.
+    Best-effort — returns True on success, False otherwise."""
+    import json
+    c = _get_client()
+    if not c or not paper_id or content_list is None:
+        return False
+    try:
+        payload = json.dumps(content_list).encode("utf-8")
+        c.storage.from_(PDF_BUCKET).upload(
+            _json_object_key(paper_id),
+            payload,
+            {"content-type": "application/json", "upsert": "true"},
+        )
+        return True
+    except Exception as e:
+        logger.info("pdf_store: parsed-json upload failed for %s: %s", paper_id, str(e)[:150])
+        return False
+
+
+def download_parsed_json(paper_id: str) -> list | None:
+    """Return cached MinerU content_list (list of blocks), or None if not cached."""
+    import json
+    c = _get_client()
+    if not c or not paper_id:
+        return None
+    try:
+        data = c.storage.from_(PDF_BUCKET).download(_json_object_key(paper_id))
+        if not data:
+            return None
+        parsed = json.loads(data.decode("utf-8"))
+        return parsed if isinstance(parsed, list) else None
+    except Exception:
+        return None

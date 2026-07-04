@@ -25,12 +25,18 @@ ALTER TABLE paper_cache DISABLE ROW LEVEL SECURITY;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 2. paper_chunks — RAG vector store (cosine computed in Python, no pgvector)
+--    MinerU migration: schema now carries page + block_type for structure-aware
+--    retrieval and page-level citations. The old pypdf-quality chunks are dropped
+--    so papers get re-ingested with MinerU. DESTRUCTIVE: re-running clears chunks.
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS paper_chunks (
+DROP TABLE IF EXISTS paper_chunks;
+CREATE TABLE paper_chunks (
   id          BIGSERIAL PRIMARY KEY,
   paper_id    TEXT        NOT NULL,
   chunk_index INT         NOT NULL,
   section     TEXT,
+  page        INT,                    -- 0-based page index from MinerU
+  block_type  TEXT        DEFAULT 'text',  -- text | table | equation
   text        TEXT        NOT NULL,
   embedding   TEXT        NOT NULL,   -- JSON-encoded float array
   token_count INT,

@@ -147,11 +147,13 @@ def fake_store(monkeypatch):
     monkeypatch.setattr(rag_store, "get_all_chunks", store.get_all_chunks)
     monkeypatch.setattr(rag_store, "retrieve_chunks", store.retrieve_chunks)
     monkeypatch.setattr(rag_store, "retrieve_by_section", store.retrieve_by_section)
-    # Keep the PDF cache offline in tests (no Supabase Storage network calls).
+    # Keep the PDF + parsed-json caches offline in tests (no Supabase Storage network calls).
     from agent.tools import pdf_store
     monkeypatch.setattr(pdf_store, "download_pdf", lambda paper_id: None)
     monkeypatch.setattr(pdf_store, "store_pdf_bytes", lambda paper_id, data: True)
     monkeypatch.setattr(pdf_store, "cached_pdf_url", lambda paper_id: None)
+    monkeypatch.setattr(pdf_store, "download_parsed_json", lambda paper_id: None)
+    monkeypatch.setattr(pdf_store, "store_parsed_json", lambda paper_id, content_list: True)
     return store
 
 
@@ -556,46 +558,100 @@ def test_ingest_skips_when_already_done(fake_store, fake_embed):
     assert result.source == "cached"
 
 
-# A realistic multi-section paper body spanning far beyond abstract/method —
-# the sections the OLD pipeline dropped (results, conclusion) must be indexed.
-_LONG_PDF_TEXT = (
-    "Abstract\n\n" + ("We study a new method for widget alignment. " * 20) + "\n\n"
-    "Introduction\n\n" + ("Prior work on widgets is extensive and varied. " * 30) + "\n\n"
-    "Method\n\n" + ("Our approach uses a two-stage alignment pipeline. " * 30) + "\n\n"
-    "Results\n\n" + ("On the WidgetBench benchmark we reach 92.5 accuracy. " * 30) + "\n\n"
-    "Conclusion\n\n" + ("A key limitation is reliance on labelled data. " * 20) + "\n\n"
-)
+# A realistic MinerU content_list: headings (text_level>=1), body text spread across
+# pages, and a results table — the structure the new pipeline must preserve.
+_FAKE_CONTENT_LIST = [
+    {"type": "text", "text": "Abstract", "text_level": 1, "page_idx": 0},
+    {"type": "text", "text": "We study a new method for widget alignment. " * 20, "page_idx": 0},
+    {"type": "text", "text": "Introduction", "text_level": 1, "page_idx": 0},
+    {"type": "text", "text": "Prior work on widgets is extensive and varied. " * 30, "page_idx": 1},
+    {"type": "text", "text": "Method", "text_level": 1, "page_idx": 1},
+    {"type": "text", "text": "Our approach uses a two-stage alignment pipeline. " * 30, "page_idx": 2},
+    {"type": "text", "text": "Results", "text_level": 1, "page_idx": 3},
+    {"type": "text", "text": "On the WidgetBench benchmark we reach 92.5 accuracy. " * 30, "page_idx": 3},
+    {
+        "type": "table",
+        "table_caption": ["Table 1: Main results on WidgetBench"],
+        "table_body": "<table><tr><td>Model</td><td>Acc</td></tr><tr><td>Ours</td><td>92.5</td></tr></table>",
+        "page_idx": 3,
+    },
+    {"type": "text", "text": "Conclusion", "text_level": 1, "page_idx": 4},
+    {"type": "text", "text": "A key limitation is reliance on labelled data. " * 20, "page_idx": 4},
+]
 
 
-def _fake_pdf(monkeypatch, tmp_path, text):
-    """Make fetch_pdf return a temp path and parse_pdf return *text* as full text."""
-    from agent.tools.pdf_parser import PdfParseResult
-
+def _fake_pdf(monkeypatch, tmp_path, content_list):
+    """Make fetch_pdf return a temp path and MinerU return *content_list* blocks."""
     pdf_file = tmp_path / "paper.pdf"
     pdf_file.write_bytes(b"%PDF-1.4 fake")
     monkeypatch.setattr("agent.rag.ingest.fetch_pdf", lambda url, **kw: pdf_file)
     monkeypatch.setattr(
-        "agent.rag.ingest.parse_pdf",
-        lambda path, **kw: PdfParseResult(
-            text=text, abstract="We study a new method for widget alignment.",
-            method="Our approach uses a two-stage alignment pipeline.",
-            experiments=None, table_mentions=[], figure_mentions=[],
-        ),
+        "agent.rag.ingest.run_mineru_content_list",
+        lambda path, **kw: content_list,
     )
 
 
 def test_ingest_indexes_full_paper_not_just_head_sections(monkeypatch, tmp_path, fake_store, fake_embed):
-    _fake_pdf(monkeypatch, tmp_path, _LONG_PDF_TEXT)
+    _fake_pdf(monkeypatch, tmp_path, _FAKE_CONTENT_LIST)
     req = IngestRequest(paper_id="P_full", title="Widget Alignment", pdf_url="https://x/y.pdf")
     result = ingest_paper(req, cfg=CFG)
 
     assert result.source == "pdf"
-    sections = {c["section"] for c in fake_store.papers["P_full"]}
+    rows = fake_store.papers["P_full"]
+    sections = {c["section"] for c in rows}
     # The tail sections that the old 3-section pipeline discarded are now indexed.
     assert "results" in sections
     assert "conclusion" in sections
+    # Structure-aware metadata: pages tracked, and the results table kept as one atomic chunk.
+    assert any(c.get("block_type") == "table" for c in rows)
+    table_row = next(c for c in rows if c.get("block_type") == "table")
+    assert table_row["page"] == 3
+    assert "92.5" in table_row["text"]
+    assert any(c.get("page") is not None for c in rows)
     # Full-body indexing yields far more chunks than the old abstract+method cap.
     assert result.chunk_count >= 5
+
+
+def test_ingest_mineru_empty_falls_back_to_abstract(monkeypatch, tmp_path, fake_store, fake_embed):
+    """If MinerU yields no blocks, ingest must still index the abstract."""
+    _fake_pdf(monkeypatch, tmp_path, [])  # MinerU returns an empty content_list
+    req = IngestRequest(
+        paper_id="P_empty", title="Widget Alignment", pdf_url="https://x/y.pdf",
+        abstract="This is a sufficiently long abstract about widgets. " * 6,
+    )
+    result = ingest_paper(req, cfg=CFG)
+    assert result.source == "abstract"
+    assert result.chunk_count > 0
+
+
+def test_canonical_section_mapping():
+    from agent.tools.mineru_parser import canonical_section
+    assert canonical_section("3.1 Method") == "method"
+    assert canonical_section("Related Work") == "related_work"
+    assert canonical_section("IV. Experiments") == "experiments"
+    assert canonical_section("Limitations") == "limitations"
+    assert canonical_section("Acknowledgements") is None
+    assert canonical_section("") is None
+
+
+def test_make_chunks_from_blocks_structure():
+    from agent.tools.mineru_parser import blocks_from_content_list
+    from agent.tools.chunker import make_chunks_from_blocks
+
+    blocks = blocks_from_content_list(_FAKE_CONTENT_LIST)
+    chunks = make_chunks_from_blocks(blocks)
+
+    # chunk_index is a dense 0..n-1 range
+    assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
+    # Real section labels, not everything collapsed to "body".
+    sections = {c.section for c in chunks}
+    assert {"method", "results", "conclusion"} <= sections
+    # The table survives as exactly one atomic chunk carrying its page + figures.
+    tables = [c for c in chunks if c.block_type == "table"]
+    assert len(tables) == 1
+    assert tables[0].section == "results"
+    assert tables[0].page == 3
+    assert "92.5" in tables[0].text
 
 
 def test_embed_texts_uses_subbatches_for_large_papers(monkeypatch):

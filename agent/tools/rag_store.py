@@ -68,6 +68,8 @@ def store_chunks(paper_id: str, chunks: list[dict[str, Any]]) -> None:
             "paper_id": paper_id,
             "chunk_index": ch["chunk_index"],
             "section": ch.get("section"),
+            "page": ch.get("page"),
+            "block_type": ch.get("block_type") or "text",
             "text": ch["text"],
             "embedding": json.dumps(ch["embedding"]),
             "token_count": ch.get("token_count"),
@@ -103,18 +105,27 @@ def retrieve_by_section(
     try:
         res = (
             c.table("paper_chunks")
-            .select("chunk_index,section,text")
+            .select("chunk_index,section,page,block_type,text")
             .eq("paper_id", paper_id)
             .ilike("section", f"%{section}%")
+            .order("chunk_index")
             .limit(top_k)
             .execute()
         )
-        return [
-            {"chunk_index": r["chunk_index"], "section": r.get("section") or "body", "text": r["text"]}
-            for r in (res.data or [])
-        ]
+        return [_row_to_chunk(r) for r in (res.data or [])]
     except Exception:
         return []
+
+
+def _row_to_chunk(r: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a paper_chunks row into the chunk dict shape used across the RAG code."""
+    return {
+        "chunk_index": r["chunk_index"],
+        "section": r.get("section") or "body",
+        "page": r.get("page"),
+        "block_type": r.get("block_type") or "text",
+        "text": r["text"],
+    }
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -136,14 +147,11 @@ def get_all_chunks(paper_id: str) -> list[dict[str, Any]]:
     try:
         res = (
             c.table("paper_chunks")
-            .select("chunk_index,section,text")
+            .select("chunk_index,section,page,block_type,text")
             .eq("paper_id", paper_id)
             .execute()
         )
-        return [
-            {"chunk_index": r["chunk_index"], "section": r.get("section") or "body", "text": r["text"]}
-            for r in (res.data or [])
-        ]
+        return [_row_to_chunk(r) for r in (res.data or [])]
     except Exception:
         return []
 
@@ -161,7 +169,7 @@ def retrieve_chunks(
     try:
         res = (
             c.table("paper_chunks")
-            .select("chunk_index,section,text,embedding")
+            .select("chunk_index,section,page,block_type,text,embedding")
             .eq("paper_id", paper_id)
             .execute()
         )
@@ -174,12 +182,9 @@ def retrieve_chunks(
         try:
             emb = json.loads(row["embedding"])
             sim = _cosine(query_embedding, emb)
-            scored.append((sim, {
-                "chunk_index": row["chunk_index"],
-                "section": row.get("section") or "body",
-                "text": row["text"],
-                "similarity": round(sim, 4),
-            }))
+            chunk = _row_to_chunk(row)
+            chunk["similarity"] = round(sim, 4)
+            scored.append((sim, chunk))
         except Exception:
             continue
 

@@ -138,6 +138,18 @@ class AnswerResult:
     warning: str | None = None
 
 
+def _chunk_tag(c: dict[str, Any]) -> str:
+    """Render a chunk's provenance for the evidence header, e.g. '(METHOD, p.4)' or
+    '(RESULTS, p.6, TABLE)'."""
+    parts = [c.get("section", "body").upper()]
+    page = c.get("page")
+    if page is not None:
+        parts.append(f"p.{int(page) + 1}")  # 0-based index -> human page number
+    if c.get("block_type") == "table":
+        parts.append("TABLE")
+    return "(" + ", ".join(parts) + ")"
+
+
 def generate(
     question: str,
     chunks: list[dict[str, Any]],
@@ -151,7 +163,7 @@ def generate(
     so the model treats them as untrusted data, never as instructions — the
     project's main defense against indirect prompt injection from PDF content.
     """
-    context_parts = [f"[{i}] ({c.get('section', 'body').upper()})\n{c['text']}" for i, c in enumerate(chunks, 1)]
+    context_parts = [f"[{i}] {_chunk_tag(c)}\n{c['text']}" for i, c in enumerate(chunks, 1)]
     evidence = RAG_EVIDENCE_WRAPPER.format(evidence="\n\n".join(context_parts))
 
     messages = [{"role": m.get("role"), "content": m.get("content")} for m in history[-8:]]
@@ -170,6 +182,7 @@ def generate(
             "ref": cite.get("ref"),
             "chunk_index": idx,
             "section": cite.get("section") or (matched or {}).get("section", "body"),
+            "page": (matched or {}).get("page"),
             "quote": str(cite.get("quote") or "")[:160],
             "valid": idx in chunk_index_set,
         })

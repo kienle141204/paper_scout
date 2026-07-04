@@ -88,9 +88,10 @@ paper_summary/
 │       ├── citation.py         # apa_from_doi, bibtex_from_doi
 │       ├── web_fetch.py        # fetch_paper_from_url
 │       ├── pdf_fetcher.py      # fetch_pdf() — download PDF (arXiv/OpenReview URL → direct PDF)
-│       ├── pdf_parser.py       # PDF text extraction (pypdf)
-│       ├── chunker.py          # make_chunks/split_text — chunk ~400 token, overlap 80
-│       ├── rag_store.py        # Supabase vector store (table paper_chunks, cosine tính trong Python)
+│       ├── mineru_parser.py    # MinerU (subprocess CLI) → content_list blocks (section/page/table/eq); canonical_section()
+│       ├── pdf_parser.py       # parse_pdf() → PdfParseResult (dùng MinerU blocks, thay pypdf); giữ API cho /pdf/parse
+│       ├── chunker.py          # make_chunks_from_blocks (section thật + page + block_type; bảng = 1 chunk); split_text fallback
+│       ├── rag_store.py        # Supabase vector store (paper_chunks: +page +block_type, cosine tính trong Python)
 │       ├── library.py          # SQLite local library CRUD
 │       └── paper_cache.py      # Supabase cache (paper_cache table)
 │
@@ -175,11 +176,13 @@ LLM trong `/api/chat` trả về JSON `{action: "search"|"clarify"|"filter"|"don
   bucket) một lần. Key mới `sb_…` cần `supabase-py>=2.16` (bản 2.15 từ chối định dạng này).
 - `paper_cache` table: `paper_id` (PK), `abstract_vi`, `analysis_html`, metadata columns. Cache write
   là **fire-and-forget** qua `_bg_pool` (ThreadPoolExecutor 4 workers) — không block HTTP response.
-- `paper_chunks` table: RAG vector store.
-- `paper_pdfs` **storage bucket** (public): cache file PDF theo `paper_id` (`agent/tools/pdf_store.py`).
-  Endpoint `/pdf/proxy?paper_id=…` redirect 307 sang public URL khi cache hit (frame inline từ CDN),
-  miss thì `fetch_pdf` → stream inline + upload nền. `rag/ingest.py` cũng đọc/ghi cache này nên Reader
-  và ingest **dùng chung 1 lần tải**. `pdf_cache.py`/`rag_store.py`/`pdf_store.py` đều qua `shared_supabase.py`.
+- `paper_chunks` table: RAG vector store. Cột `section` (canonical), `page` (0-based), `block_type`
+  (`text`/`table`/`equation`) — điền từ MinerU khi ingest, dùng cho retrieval theo section + citation theo trang.
+- `paper_pdfs` **storage bucket** (public): cache file PDF theo `paper_id` (`agent/tools/pdf_store.py`),
+  đồng thời cache **content_list.json của MinerU** (`store_parsed_json`/`download_parsed_json`) để re-ingest
+  không phải chạy lại MinerU (CPU chậm). Endpoint `/pdf/proxy?paper_id=…` redirect 307 sang public URL khi
+  cache hit (frame inline từ CDN), miss thì `fetch_pdf` → stream inline + upload nền. `rag/ingest.py` cũng
+  đọc/ghi cache này nên Reader và ingest **dùng chung 1 lần tải**. Đều qua `shared_supabase.py`.
 - Bảng tắt RLS; bucket có policy anon read/write. Setup project mới: chạy `supabase_migration.sql`
   (SQL Editor) rồi `python scripts/setup_supabase.py` (tạo bucket). Xem cảnh báo RLS trong README.
 
@@ -192,6 +195,16 @@ LLM trong `/api/chat` trả về JSON `{action: "search"|"clarify"|"filter"|"don
 5. Nếu `include_synthesis=True`: `synthesize()` tổng hợp có trích dẫn `[n]`, output guardrail strip citation trỏ tới paper không tồn tại trong kết quả.
 
 `pdf_url` (tách biệt với `url`): ưu tiên `openAccessPdf.url` từ S2 — chỉ set khi có link PDF trực tiếp thật; `url` vẫn là link "xem online" (S2 page / DOI) dùng làm fallback hiển thị + input cho `fetch_pdf()` khi ingest.
+
+### Ingest — PDF → cấu trúc (MinerU)
+`ingest_paper()` (`agent/rag/ingest.py`) dùng **MinerU** (backend `pipeline`, CPU) thay pypdf:
+`fetch_pdf` → `run_mineru_content_list()` (subprocess CLI `mineru`, đọc `content_list.json`) →
+`blocks_from_content_list()` → `make_chunks_from_blocks()` → embed → `store_chunks`. Chunk mang
+`section` (canonical từ heading thật), `page`, `block_type`; **bảng số liệu giữ nguyên 1 chunk**
+(`block_type=table`, caption + grid) để retrieval kết quả không mất số. content_list.json được cache ở
+bucket `paper_pdfs` nên re-ingest không chạy lại MinerU. Không có PDF/MinerU rỗng → fallback abstract-only.
+MinerU nặng (torch + model): cài qua `pip install -e .`, tải model 1 lần `python scripts/download_mineru_models.py`.
+Config MinerU ở `[parser]` trong `config.toml` (`mineru_backend`/`mineru_device`/`mineru_lang`).
 
 ### RAG Agent (`agent/rag/`) — hỏi đáp trên 1 paper
 `run_rag_ask()` (`agent/rag/agent.py`): input guardrail → auto-ingest nếu paper chưa được index (cần `title`/`abstract` trong request) → `dispatcher.classify_lane()` chọn 1 trong 3 lane:

@@ -68,6 +68,9 @@ def _ensure_python_deps() -> None:
         import uvicorn  # noqa: F401
     except ImportError:
         print("[setup] Installing Python dependencies (pip install -e .) ...")
+        print("[setup] NOTE: MinerU (mineru[core]) pulls torch + OCR/layout models — the first")
+        print("[setup]       install is large and can take several minutes. Run")
+        print("[setup]       'python scripts/download_mineru_models.py' once to pre-fetch models.")
         subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], cwd=ROOT, check=True)
 
 

@@ -949,7 +949,11 @@ async def api_papers_pdf_parse(file: UploadFile = File(...), max_pages: int | No
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             temp_path = Path(tmp.name)
             tmp.write(await file.read())
-        result = parse_pdf(temp_path, max_pages=max_pages)
+        c = _cfg()
+        result = parse_pdf(
+            temp_path, max_pages=max_pages,
+            backend=c.mineru_backend, device=c.mineru_device, lang=c.mineru_lang,
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
@@ -1266,10 +1270,18 @@ def api_agent_status(paper_id: str | None = None) -> dict[str, Any]:
     status: dict[str, Any] = {
         "paper_cache_configured": is_configured(),
         "vector_store_configured": rag_configured(),
+        "ocr_backend": _cfg().mineru_backend,
+        "mineru_available": _mineru_available(),
     }
     if paper_id:
         status["paper_ingested"] = rag_is_ingested(paper_id)
     return status
+
+
+def _mineru_available() -> bool:
+    """True if the MinerU binary is on PATH (models may still download on first use)."""
+    import shutil
+    return shutil.which("mineru") is not None
 
 
 class IngestRequest(BaseModel):
