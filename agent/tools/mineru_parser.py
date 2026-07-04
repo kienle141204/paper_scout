@@ -115,6 +115,7 @@ def run_mineru_content_list(
             proc = subprocess.run(
                 full, env=env, timeout=timeout,
                 capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
             )
         except FileNotFoundError as e:
             raise MineruError(f"MinerU không được cài (thiếu binary 'mineru'): {e}") from e
