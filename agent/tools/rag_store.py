@@ -88,7 +88,8 @@ def store_chunks(paper_id: str, chunks: list[dict[str, Any]]) -> None:
             ) from e
         raise RuntimeError(
             f"Không thể lưu chunks vào Supabase: {e}. "
-            "Hãy chạy supabase_migration_rag.sql trong Supabase SQL Editor."
+            "Hãy chạy supabase_migration.sql trong Supabase SQL Editor "
+            "(schema paper_chunks cần cột page + block_type)."
         ) from e
 
 

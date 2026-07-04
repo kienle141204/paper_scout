@@ -5,6 +5,7 @@ IngestError on failure; the API boundary converts that to HTTPException.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from agent.config import Config
@@ -13,6 +14,8 @@ from agent.tools import rag_store
 from agent.tools.chunker import Chunk, make_chunks_from_blocks, split_text
 from agent.tools.mineru_parser import blocks_from_content_list, run_mineru_content_list
 from agent.tools.pdf_fetcher import fetch_pdf
+
+logger = logging.getLogger(__name__)
 
 
 class IngestError(Exception):
@@ -131,7 +134,13 @@ def ingest_paper(req: IngestRequest, *, cfg: Config) -> IngestResult:
             chunks = make_chunks_from_blocks(blocks, abstract=req.abstract)
             if chunks:
                 source = "pdf"
-    except Exception:
+        else:
+            logger.warning("ingest %s: không lấy được PDF (fetch trả None) — fallback abstract.", req.paper_id)
+    except Exception as e:
+        # Surface the real cause (e.g. MinerU chưa cài / parse lỗi) instead of a silent
+        # abstract fallback that looks like a download failure.
+        logger.warning("ingest %s: parse/fetch thất bại (%s: %s) — fallback abstract.",
+                       req.paper_id, type(e).__name__, str(e)[:300])
         chunks = []
     finally:
         if pdf_path and pdf_path.exists():

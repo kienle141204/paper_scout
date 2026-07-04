@@ -43,17 +43,23 @@ class MineruError(RuntimeError):
 
 
 def _mineru_cmd() -> list[str]:
-    """Locate the mineru executable, preferring the one next to the running python."""
+    """Locate the mineru executable, preferring the one shipped in the running env.
+
+    On Windows the console script lives in ``<env>\\Scripts\\mineru.exe`` (python.exe is
+    in the env root), on POSIX in ``<env>/bin/mineru`` (next to python). We probe both
+    so a non-activated conda env (PATH lacks Scripts/bin) still resolves it.
+    """
     exe = shutil.which("mineru")
     if exe:
         return [exe]
-    # Fall back to the console script next to sys.executable (conda env bin/Scripts).
-    bindir = Path(sys.executable).parent
-    for name in ("mineru", "mineru.exe"):
-        cand = bindir / name
-        if cand.exists():
-            return [str(cand)]
-    # Last resort: python -m mineru.cli.client
+    pyparent = Path(sys.executable).parent
+    search_dirs = [pyparent, pyparent / "Scripts", pyparent / "bin", pyparent.parent / "Scripts"]
+    for d in search_dirs:
+        for name in ("mineru.exe", "mineru"):
+            cand = d / name
+            if cand.exists():
+                return [str(cand)]
+    # Last resort: run the CLI module through the current interpreter.
     return [sys.executable, "-m", "mineru.cli.client"]
 
 
