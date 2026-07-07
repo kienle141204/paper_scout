@@ -4,9 +4,9 @@
 
 # 🔬 PaperScout
 
-**Trợ lý research cá nhân chạy local — với RAG reasoning agent đọc PDF theo cấu trúc**
+**Trợ lý research cá nhân chạy local — tìm paper hội nghị lớn trên OpenReview, đọc PDF bằng RAG, lưu note sang Notion**
 
-Tìm kiếm đa nguồn · Dịch tiếng Việt · Chat AI · RAG Agent per-paper (MinerU) · Chạy 1 lệnh, không cần deploy
+OpenReview-first · ICLR/NeurIPS/ICML/COLM/EMNLP · Reader + RAG Agent · Notion OAuth · Chạy 1 lệnh, không cần deploy
 
 ---
 
@@ -14,16 +14,14 @@ Tìm kiếm đa nguồn · Dịch tiếng Việt · Chat AI · RAG Agent per-pap
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Vite](https://img.shields.io/badge/Vite-5-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev/)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind-3-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
-[![Supabase](https://img.shields.io/badge/Supabase-Shared%20Paper%20DB-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com/)
+[![Vite](https://img.shields.io/badge/Vite-6-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vite.dev/)
+[![OpenReview](https://img.shields.io/badge/Source-OpenReview-8B5CF6?style=flat-square)](https://openreview.net/)
 
 [![MinerU](https://img.shields.io/badge/Parser-MinerU%202-FF6F00?style=flat-square)](https://github.com/opendatalab/MinerU)
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4.1-412991?style=flat-square&logo=openai&logoColor=white)](https://openai.com/)
 [![Google Gemini](https://img.shields.io/badge/Google-Gemini%202.5-4285F4?style=flat-square&logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
-[![Semantic Scholar](https://img.shields.io/badge/Source-Semantic%20Scholar-D62728?style=flat-square)](https://www.semanticscholar.org/)
-[![arXiv](https://img.shields.io/badge/Source-arXiv-B31B1B?style=flat-square)](https://arxiv.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
+[![Notion](https://img.shields.io/badge/Export-Notion%20OAuth-000000?style=flat-square&logo=notion&logoColor=white)](https://developers.notion.com/)
+[![Supabase](https://img.shields.io/badge/Cache-Shared%20Supabase-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com/)
 
 </div>
 
@@ -31,12 +29,14 @@ Tìm kiếm đa nguồn · Dịch tiếng Việt · Chat AI · RAG Agent per-pap
 
 ## 📸 Tổng quan
 
-PaperScout là **trợ lý research cá nhân chạy trên máy của bạn** — clone repo, thêm API key LLM, chạy một lệnh là có ngay app tìm kiếm/đọc/phân tích paper bằng AI. Không cần đăng nhập, không cần deploy. Điểm nổi bật là **RAG Agent per-paper**: mỗi bài báo có một AI riêng đọc **toàn bộ PDF theo cấu trúc thật** (section, trang, bảng số liệu) qua [MinerU](https://github.com/opendatalab/MinerU), rồi trả lời câu hỏi kèm **trích dẫn tới đúng đoạn và số trang**.
+PaperScout là **trợ lý research cá nhân chạy trên máy của bạn**. Luồng chính hiện tại là tìm paper ở các hội nghị lớn trên **OpenReview**, mở paper trong Reader, đọc PDF/abstract bằng RAG Agent, rồi lưu reading note sang Notion khi bạn yêu cầu.
 
-Dữ liệu **cá nhân** (paper đã lưu, lịch sử, ngôn ngữ) nằm ngay trên máy (trình duyệt / SQLite local). Dữ liệu **paper dùng chung** (bản dịch, RAG chunks, cache PDF) nằm trên một Supabase chung đã cấu hình sẵn — bạn không phải set up gì.
+Ứng dụng này không cố làm một search engine học thuật tổng quát. Nó ưu tiên một use case hẹp nhưng hữu ích: **tìm paper conference gần đây**, đọc nhanh, hỏi đáp có căn cứ, và gom note vào workspace cá nhân.
 
-```
-📄 Tìm paper → 🧠 AI phân tích → 📖 Đọc PDF + hỏi đáp RAG → 🌐 Dịch tiếng Việt
+Dữ liệu **cá nhân** nằm local: saved papers, memory, Notion OAuth token và mapping paper → Notion page được lưu trong `library.sqlite3` hoặc local browser state. Dữ liệu **paper/cache dùng chung** như cached PDF/chunks có thể dùng Supabase đã cấu hình sẵn trong repo.
+
+```txt
+🔍 Tìm paper OpenReview → 📄 Mở Reader → 🤖 Hỏi đáp RAG → 📝 Save to Notion
 ```
 
 ---
@@ -47,35 +47,36 @@ Dữ liệu **cá nhân** (paper đã lưu, lịch sử, ngôn ngữ) nằm ngay
 <tr>
 <td width="50%">
 
-### 🔍 Tìm kiếm thông minh
-- Tìm đa nguồn: **Semantic Scholar** (primary), OpenReview, arXiv, OpenAlex, Crossref, DBLP
-- Hỗ trợ **15+ hội nghị lớn**: NeurIPS, ICML, ICLR, CVPR, ACL, EMNLP, AAAI…
-- Parse NL query → keywords / variants / venues / năm bằng LLM
-- Xếp hạng theo **embedding cosine similarity**
-- Fallback thông minh khi S2 rate-limit (OpenReview song song)
+### 🔍 OpenReview-first Search
+- Nguồn tìm kiếm chính: **OpenReview API v2** qua `/notes/search`
+- Tập trung hội nghị lớn: **ICLR, NeurIPS, ICML, COLM, EMNLP**
+- Tìm theo topic/method/task và có thể lọc venue/năm
+- Search Agent có guardrail, query analysis, cache/session local
+- Xếp hạng kết quả theo relevance score và quality signals
 
-### 💬 Chat AI
-- Conversational agent tìm kiếm bằng ngôn ngữ tự nhiên (VI/EN)
-- Actions: `search` · `filter` · `clarify` · `done`
-- Filter client-side không cần gọi lại backend
+### 💬 Chat & Reader
+- Reader Screen hiển thị PDF nếu resolve được link nhúng
+- Fallback sang abstract khi PDF bị chặn hoặc không có mirror
+- Chat hỏi đáp theo từng paper, giữ history hội thoại
+- UI hỗ trợ tiếng Anh/tiếng Việt
 
 </td>
 <td width="50%">
 
 ### 🤖 RAG Agent per-paper
-- **Parse PDF theo cấu trúc bằng MinerU**: giữ section thật (heading), số trang, và **bảng số liệu nguyên vẹn** — nên câu trả lời không bị mất số
-- Trả lời có **trích dẫn `[1][2]`** trỏ đúng đoạn + **số trang** (vd. *"Results, p.6, TABLE"*)
-- **Chunk metadata** (title/authors/year/venue) được index → hỏi tác giả / năm / hội nghị đều trả lời được
-- **Hybrid retrieval**: vector cosine + BM25 hợp nhất bằng RRF, rồi **cross-encoder rerank**
-- **Dispatcher 3-lane**: skill → fast → deliberate (ReAct multi-hop), tự escalate khi lane rẻ hơn không xử lý được
-- **Grounding check** thông minh: hiện câu trả lời kèm badge cảnh báo mức rủi ro, chỉ từ chối khi thực sự bịa số/dữ kiện
-- 2 cách dùng: **Reader Screen** (đọc PDF thật + chat full-page) hoặc floating bubble ở trang Detail
+- Auto-ingest paper khi mở Reader hoặc hỏi đáp
+- Parse PDF bằng **MinerU** để giữ section, page, table/block type
+- Chunk metadata title/authors/year/venue để hỏi thông tin bibliographic
+- Retrieval hybrid: vector + BM25/RRF, có rerank khi khả dụng
+- Dispatcher 3 lane: skill → fast → deliberate
+- Grounding check: trả lời kèm citation/chunk/page khi có evidence
 
-### 🌐 Đa ngôn ngữ & Phân tích
-- Dịch abstract sang **tiếng Việt** tự động (LLM)
-- Phân tích paper: HTML report 3 sections với diagram đẹp
-- Cache kết quả trong Supabase để tiết kiệm token
-- Giao diện **EN/VI** toggle
+### 📝 Notion Export
+- Chỉ ghi Notion khi người dùng bấm nút `Notion`
+- Hỗ trợ **OAuth Public Connection** kiểu "Connect Notion"
+- Vẫn hỗ trợ `NOTION_TOKEN` tĩnh cho setup cá nhân nhanh
+- Idempotent: lưu mapping paper → Notion page để tránh tạo trùng
+- Có thể export summary hoặc full reading note kèm Q&A history
 
 </td>
 </tr>
@@ -83,99 +84,119 @@ Dữ liệu **cá nhân** (paper đã lưu, lịch sử, ngôn ngữ) nằm ngay
 
 ---
 
+## 🎯 Phạm vi tìm kiếm hiện tại
+
+PaperScout hiện ưu tiên OpenReview thay vì search đa nguồn rộng. Backend endpoint `/api/papers/search` luôn route source về:
+
+```python
+sources=["openreview"]
+```
+
+Các venue OpenReview đang có trong code:
+
+| Key | Venue |
+|---|---|
+| `iclr` | ICLR |
+| `neurips` | NeurIPS |
+| `icml` | ICML |
+| `colm` | COLM |
+| `emnlp` | EMNLP |
+
+Các nguồn khác vẫn có trong repo nhưng không phải luồng search chính:
+
+| Source | Vai trò hiện tại |
+|---|---|
+| Semantic Scholar | resolve PDF/citation, detail hoặc flow phụ |
+| arXiv | tìm mirror PDF/open-access copy |
+| OpenAlex | resolve PDF, related/citation hỗ trợ |
+| Crossref/DBLP | helper metadata/citation trong các endpoint phụ |
+
+> OpenReview `/notes/search` yêu cầu có keyword, nên PaperScout không phù hợp để browse toàn bộ conference với query rỗng. Hãy nhập topic cụ thể như `diffusion medical image segmentation`, `long context transformer retrieval`, hoặc `LLM alignment preference optimization`.
+
+---
+
 ## 🏗️ Kiến trúc
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        PaperScout                               │
-│                                                                 │
-│   Frontend (React + TypeScript + Vite)                         │
-│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌───────┐ │
-│   │  Search  │ │  Detail  │ │  Reader  │ │  Chat   │ │  RAG  │ │
-│   │  Screen  │ │  Screen  │ │  Screen  │ │  Screen │ │ Bubble│ │
-│   └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬────┘ └───┬───┘ │
-│        │             │             │             │          │   │
-│        └─────────────┴─────────────┴─────────────┴──────────┘   │
-│                              │ REST API                         │
-├──────────────────────────────┼──────────────────────────────────┤
-│   Backend (FastAPI)          │                                  │
-│   ┌───────────────────────────────────────────────────────────┐ │
-│   │  /api/papers/search  │  /api/chat  │  /api/papers/ask    │ │
-│   │  /api/papers/view    │  /pdf/proxy │  /api/papers/ingest │ │
-│   └──────────┬────────────────────────────────┬───────────────┘ │
-│              │                                │                  │
-│   ┌──────────▼──────────┐      ┌─────────────▼─────────────┐   │
-│   │  agent/search/      │      │   agent/rag/               │   │
-│   │  Search Agent        │      │   RAG Agent (MinerU)       │   │
-│   │  rewrite/sufficiency │      │   dispatcher 3-lane        │   │
-│   │  loop · synthesis    │      │   skill/fast/deliberate    │   │
-│   └──────────┬──────────┘      └─────────────┬─────────────┘   │
-│              │      agent/core/ (budget · governor · guardrail · trace) │
-│   ┌──────────▼──────────────────────────────────▼─────────────┐ │
-│   │  agent/tools/ — S2 · OpenReview · arXiv · OpenAlex ·       │ │
-│   │  LLM router · embeddings · MinerU parser · chunker ·       │ │
-│   │  pdf_fetcher · pdf_store · rag_store (vector + BM25)       │ │
-│   └─────────────────────────────────────────────────────────────┘ │
+```txt
+┌──────────────────────────────────────────────────────────────────┐
+│                            PaperScout                            │
+│                                                                  │
+│  Frontend (React + TypeScript + Vite)                            │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌─────────┐ │
+│  │  Home    │ │ Results  │ │  Detail  │ │ Reader  │ │ Saved   │ │
+│  │  Search  │ │ Screen   │ │ Screen   │ │ + RAG   │ │ Library │ │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬────┘ └────┬────┘ │
+│       └────────────┴────────────┴────────────┴───────────┘      │
+│                              │ REST API                          │
+├──────────────────────────────┼───────────────────────────────────┤
+│  Backend (FastAPI)           │                                   │
+│  ┌──────────────────────────────────────────────────────────────┐ │
+│  │ /api/papers/search     OpenReview-first search               │ │
+│  │ /api/papers/ingest     PDF/abstract ingest for RAG           │ │
+│  │ /api/papers/ask        paper Q&A                             │ │
+│  │ /api/notion/connect    Notion OAuth                          │ │
+│  │ /api/papers/export/notion  save/update reading note          │ │
+│  └───────────┬──────────────────────────────┬───────────────────┘ │
+│              │                              │                     │
+│  ┌───────────▼───────────┐      ┌───────────▼───────────┐         │
+│  │ agent/search/          │      │ agent/rag/             │         │
+│  │ Search Agent           │      │ RAG Agent              │         │
+│  │ OpenReview route       │      │ ingest/retrieve/answer │         │
+│  │ rank/cache/session     │      │ Notion export          │         │
+│  └───────────┬───────────┘      └───────────┬───────────┘         │
+│              │          agent/core/ budget · guardrail · trace     │
+│  ┌───────────▼──────────────────────────────▼───────────────────┐ │
+│  │ agent/tools/ OpenReview · PDF resolver · MinerU · Supabase ·  │ │
+│  │ LLM/embedding router · Notion SDK/OAuth · local SQLite store  │ │
+│  └──────────────────────────────────────────────────────────────┘ │
 ├──────────────────────────────────────────────────────────────────┤
-│   Infrastructure                                                 │
-│   ┌───────────────┐  ┌─────────────────┐  ┌──────────────────┐  │
-│   │ Supabase CHUNG│  │  OpenAI/Gemini  │  │  Local (trên máy)│  │
-│   │  paper_cache  │  │  LLM · Embed    │  │  localStorage    │  │
-│   │  paper_chunks │  │                 │  │  library.sqlite3 │  │
-│   │  paper_pdfs 🪣│  │                 │  │                  │  │
-│   └───────────────┘  └─────────────────┘  └──────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+│  Storage                                                         │
+│  ┌──────────────────┐ ┌─────────────────┐ ┌───────────────────┐ │
+│  │ OpenReview API   │ │ Shared Supabase │ │ Local SQLite      │ │
+│  │ paper metadata   │ │ PDF/chunk cache │ │ memory/notion map │ │
+│  └──────────────────┘ └─────────────────┘ └───────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### 🧠 Two-Agent Harness
 
-PaperScout dùng **2 agent độc lập**, chỉ giao nhau ở bước ingest (xem
-[`agent/agent-harness-design.md`](agent/agent-harness-design.md) cho thiết kế đầy đủ — budget governor,
-3-tier memory, evidence safety wrapper…):
+PaperScout dùng hai agent chính:
 
-```
+```txt
 Search Agent (agent/search/)                 RAG Agent (agent/rag/)
-───────────────────────────────              ───────────────────────────────
-input guardrail (chặn injection)             input guardrail
-       │                                            │
-       ▼                                     auto-ingest nếu chưa index:
-search đa nguồn (S2 → fallback OpenReview)    fetch PDF → MinerU parse (section/
-       │                                      page/table) → chunk → embed → store
-score_and_rank (embedding cosine)                   │
-       │                                     dispatcher → chọn lane:
-chưa đủ "tốt"? rewrite query, lặp lại        ┌─────────┬────────┬────────────┐
-  (tới max_iterations hoặc diminishing)       │  skill  │  fast  │ deliberate │
-       │                                     │ quy trình│retrieve│ ReAct loop │
-include_synthesis? → synthesize() có trích   │ cố định  │(vector+│ có budget  │
-dẫn [n], strip citation giả                  │(tóm tắt…)│ BM25)  │ governor   │
-       │                                     │ escalate │+rerank │ (multi-hop)│
-       │                                     │ nếu fail │+generate│           │
-       ▼                                     └─────────┴────────┴────────────┘
-SearchRunResult                                       │
-                                             check_grounded() → output guardrail:
-                                             hiện answer + badge rủi ro; chỉ refuse
-                                             khi risk=high & không truy vết được
-                                                      ▼
-                                             RagAskResult (answer + citations
-                                             theo trang + confidence + coverage)
+─────────────────────────────                ─────────────────────────────
+input guardrail                               input guardrail
+       │                                             │
+       ▼                                             ▼
+query analysis / heuristic fallback            auto-ingest if needed
+       │                                      PDF → MinerU → chunks → embed
+       ▼                                             │
+OpenReview `/notes/search`                           ▼
+       │                                      dispatcher chooses lane:
+score + rank + dedupe                         skill | fast | deliberate
+       │                                             │
+cache/session optional                               ▼
+       ▼                                      grounded answer + citations
+SearchRunResult                                      │
+                                                     ▼
+                                            optional Notion export
 ```
 
 ---
 
 ## 🚀 Quick Start
 
-Chạy local trong **vài bước**. Không cần đăng nhập, không cần deploy, không cần tự dựng database.
+Chạy local trong vài bước. Không cần deploy, không cần account app.
 
 ### Yêu cầu
 
 | Tool | Version |
-|------|---------|
+|---|---|
 | Python | 3.10+ |
 | Node.js | 18+ |
 | npm | 9+ |
 
-> 📦 RAG dùng **MinerU** (kéo theo `torch` + model layout/OCR) — lần cài đầu khá nặng. Nếu chỉ dùng
-> tìm kiếm/dịch/chat mà không cần RAG đọc PDF, vẫn chạy được (RAG sẽ fallback về abstract-only).
+> RAG PDF parsing dùng **MinerU** nên lần cài đầu có thể nặng. Nếu chỉ tìm paper và đọc abstract, app vẫn chạy được; Reader sẽ fallback abstract-only khi PDF parse không khả dụng.
 
 ### 1. Clone
 
@@ -184,329 +205,147 @@ git clone https://github.com/kienle141204/paper_scout.git
 cd paper_scout
 ```
 
-### 2. Thêm API key
-
-Tạo `backend/.env` (hoặc để `run.py` tự tạo từ mẫu ở lần chạy đầu) và điền **một** key LLM:
+### 2. Tạo env
 
 ```bash
 cp backend/.env.example backend/.env
-# rồi mở backend/.env, đặt OPENAI_API_KEY=sk-...   (hoặc GEMINI_API_KEY=...)
 ```
 
-> DB paper dùng chung (Supabase) đã được nhúng sẵn — bạn **không cần** cấu hình gì thêm.
+Điền ít nhất một provider LLM:
 
-### 3. Tải model MinerU (một lần, cho RAG)
-
-```bash
-python scripts/download_mineru_models.py
+```env
+OPENAI_API_KEY=sk-...
+# hoặc:
+GEMINI_API_KEY=...
 ```
 
-Bước này tải model parse layout/bảng/công thức của MinerU về máy. Chỉ cần chạy **một lần**. Nếu ở VN
-mà Hugging Face chập chờn, đặt `mineru_model_source = "modelscope"` trong `config.toml` (xem bên dưới).
-
-### 4. Chạy một lệnh
+### 3. Chạy một lệnh
 
 ```bash
 python run.py
 ```
 
-Lệnh này tự lo phần còn lại: cài dependency Python (`pip install -e .`) và frontend
-(`npm install`) ở lần đầu, rồi khởi động **cả backend lẫn frontend** song song.
+Lệnh này tự lo:
 
-Mở trình duyệt tại **`http://localhost:5173`** · Backend chạy ở `http://localhost:8000`.
-Nhấn `Ctrl+C` để dừng cả hai.
+- cài Python deps (`pip install -e .`) khi cần;
+- cài frontend deps (`npm install`) khi cần;
+- chạy backend tại `http://127.0.0.1:8000`;
+- chạy frontend tại `http://localhost:5173`.
+
+Mở browser ở:
+
+```txt
+http://localhost:5173
+```
+
+---
+
+## 🔧 Cấu hình tùy chọn
 
 <details>
-<summary>Tùy chọn: đổi provider/model + cấu hình MinerU qua <code>config.toml</code></summary>
+<summary>Notion OAuth: bấm Connect giống các app hiện đại</summary>
 
-Tạo `config.toml` ở root (mặc định dùng OpenAI + MinerU CPU nếu bỏ qua):
+Tạo Public Connection trong Notion Developer Portal và đặt redirect URI:
+
+```txt
+http://localhost:8000/api/notion/callback
+```
+
+Thêm vào `backend/.env`:
+
+```env
+NOTION_OAUTH_CLIENT_ID=...
+NOTION_OAUTH_CLIENT_SECRET=...
+NOTION_OAUTH_REDIRECT_URI=http://localhost:8000/api/notion/callback
+```
+
+Trong Reader, bấm `Connect`/`Notion`, chọn page/workspace trong Notion, rồi quay lại PaperScout. Token OAuth được lưu local trong `library.sqlite3`. Nếu không đặt target database/page, PaperScout tạo private page ở workspace level và lưu mapping để lần sau update cùng page.
+
+</details>
+
+<details>
+<summary>Notion token tĩnh: phù hợp cho setup cá nhân nhanh</summary>
+
+Thêm vào `backend/.env`:
+
+```env
+NOTION_TOKEN=secret_...
+NOTION_DATABASE_ID=...
+# hoặc:
+NOTION_PARENT_PAGE_ID=...
+```
+
+Nếu dùng `NOTION_DATABASE_ID`, database cần có property dạng `rich_text` tên:
+
+```txt
+PaperScout Key
+```
+
+Property này dùng để tìm page đã có và tránh duplicate.
+
+</details>
+
+<details>
+<summary>Model và parser qua <code>config.toml</code></summary>
+
+Tạo `config.toml` ở repo root nếu muốn đổi model/provider:
 
 ```toml
 [llm]
 provider = "openai"   # hoặc "gemini"
 
 [openai]
-model          = "gpt-4.1-mini"
-cheap_model    = "gpt-4.1-nano"
+model = "gpt-4.1-mini"
+cheap_model = "gpt-4.1-nano"
 analysis_model = "gpt-4.1"
 
-# [gemini]
-# model          = "gemini-2.5-flash"
-# cheap_model    = "gemini-2.0-flash-lite"
-# analysis_model = "gemini-2.5-pro"
+[gemini]
+model = "gemini-2.5-flash"
+cheap_model = "gemini-2.0-flash-lite"
+analysis_model = "gemini-2.5-pro"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
 
 [parser]
-parser             = "mineru"
-mineru_backend     = "pipeline"      # pipeline = CPU; "vlm-transformers" nếu có GPU NVIDIA
-mineru_device      = "cpu"           # cpu | cuda
-mineru_lang        = "en"
-mineru_model_source = "huggingface"  # đổi "modelscope" nếu HF bị chặn/chập chờn (VN)
-mineru_max_pages   = 10              # chỉ OCR 10 trang đầu (0 = toàn bộ). CPU chậm nên giới hạn.
+parser = "mineru"
+mineru_backend = "pipeline"
+mineru_device = "cpu"
+mineru_lang = "en"
+mineru_model_source = "huggingface"
+mineru_max_pages = 10
+```
+
+Nếu cần tải model MinerU trước:
+
+```bash
+python scripts/download_mineru_models.py
 ```
 
 </details>
 
 <details>
-<summary>Tùy chọn: dùng Supabase RIÊNG của bạn thay vì DB chung</summary>
+<summary>Dùng Supabase riêng thay vì DB/cache chung</summary>
 
-Đặt `SUPABASE_URL` + `SUPABASE_ANON_KEY` (hoặc publishable key) trong `backend/.env` để ghi đè DB
-chung, rồi:
+PaperScout có shared Supabase mặc định trong `agent/tools/shared_supabase.py`. Nếu muốn dùng Supabase riêng:
 
-1. Chạy [`supabase_migration.sql`](supabase_migration.sql) trong Supabase SQL Editor — tạo bảng
-   `paper_cache` + `paper_chunks` (đủ cột `section` / `page` / `block_type` cho RAG).
-2. Chạy `python scripts/setup_supabase.py` — tạo storage bucket `paper_pdfs` (cache PDF + MinerU JSON).
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+# hoặc SUPABASE_ANON_KEY nếu dùng key JWT cũ
+SUPABASE_SECRET_KEY=sb_secret_...
+```
 
-> ⚠️ **Lưu ý DB chung**: các bảng đang tắt Row-Level Security, nên bất kỳ ai có anon key (được
-> ship trong repo) cũng có thể ghi vào DB chung. Nếu lo bị lạm dụng, hãy bật RLS + policy
-> read-mostly trên Supabase, hoặc dùng Supabase riêng.
+Sau đó chạy migration SQL trong Supabase SQL Editor:
+
+- `supabase_migration.sql`
+- `supabase_migration_rag.sql`
+
+Và tạo storage bucket bằng:
+
+```bash
+python scripts/setup_supabase.py
+```
 
 </details>
-
----
-
-## ⚙️ Cấu hình
-
-### Backend (`backend/.env`)
-
-| Biến | Bắt buộc | Mô tả |
-|------|----------|--------|
-| `OPENAI_API_KEY` | Nếu dùng OpenAI | LLM + embeddings |
-| `GEMINI_API_KEY` | Nếu dùng Gemini | Thay thế OpenAI |
-| `SEMANTIC_SCHOLAR_API_KEY` | Không | Tăng rate limit S2 |
-| `SUPABASE_URL` | Không | Ghi đè DB paper chung bằng Supabase riêng |
-| `SUPABASE_ANON_KEY` | Không | Anon/publishable key cho Supabase riêng (đi kèm `SUPABASE_URL`) |
-
-### Frontend (`frontend/.env`)
-
-| Biến | Mô tả |
-|------|--------|
-| `VITE_API_URL` | Backend URL — để trống cũng được (vite proxy `/api` → `:8000` khi dev) |
-
-### LLM Tiers
-
-| Tier | Dùng cho | OpenAI | Gemini |
-|------|----------|--------|--------|
-| `cheap_model` | translate, summarize, dispatcher, guardrail, grounding | `gpt-4.1-nano` | `gemini-2.0-flash-lite` |
-| `model` | chat, parse-query, RAG answer | `gpt-4.1-mini` | `gemini-2.5-flash` |
-| `analysis_model` | paper analyze (cached) | `gpt-4.1` | `gemini-2.5-pro` |
-
----
-
-## 📡 API Reference
-
-### Search & Discovery
-
-| Method | Endpoint | Mô tả |
-|--------|----------|--------|
-| `GET` | `/api/conferences` | Danh sách hội nghị hỗ trợ |
-| `POST` | `/api/papers/search` | Tìm paper (S2 primary + variant queries) |
-| `POST` | `/api/papers/view` | Lấy abstract_vi (cache → dịch LLM) |
-| `POST` | `/api/papers/analyze` | HTML analysis report (cached) |
-| `POST` | `/api/parse-query` | NL query → keywords / venues / year |
-| `POST` | `/detail` | Chi tiết paper theo DOI / arXiv / S2 ID |
-
-### Chat & RAG
-
-| Method | Endpoint | Mô tả |
-|--------|----------|--------|
-| `POST` | `/api/chat` | Conversational search agent (stateless) |
-| `GET` | `/api/agent/status` | Kiểm tra Supabase cache + RAG store; `?paper_id=` để check đã ingest chưa |
-| `POST` | `/api/papers/ingest` | Fetch PDF → MinerU parse → chunk → embed → store (idempotent, fallback abstract) |
-| `POST` | `/api/papers/ask` | RAG Q&A — dispatcher 3-lane (skill/fast/deliberate) + grounding check |
-| `GET` | `/pdf/proxy` | Redirect/stream PDF inline (cache hit từ bucket `paper_pdfs`) |
-
-### Utilities (paper)
-
-| Method | Endpoint | Mô tả |
-|--------|----------|--------|
-| `POST` | `/api/papers/citation` | APA / BibTeX từ DOI |
-| `POST` | `/api/papers/recommend` | Paper liên quan / citing (OpenAlex) |
-| `POST` | `/api/papers/score` | Relevance score qua embedding cosine |
-| `POST` | `/api/papers/pdf/parse` | Upload PDF → parse text (MinerU) |
-
-### Utilities
-
-| Method | Endpoint | Mô tả |
-|--------|----------|--------|
-| `POST` | `/translate` | Dịch abstract sang tiếng Việt |
-| `POST` | `/summarize` | Tóm tắt abstract (5 bullet points) |
-| `POST` | `/library/*` | CRUD thư viện cá nhân (SQLite) |
-
----
-
-## 📁 Cấu trúc thư mục
-
-```
-paper_scout/
-├── 📂 agent/
-│   ├── config.py                # Config dataclass + load_config() ([parser] MinerU)
-│   ├── model.py                 # Paper dataclass
-│   ├── cli.py                   # paper-agent CLI
-│   ├── agent-harness-design.md  # 📐 Thiết kế đầy đủ 2 agent
-│   │
-│   ├── core/                    # Dùng chung bởi cả 2 agent
-│   │   ├── budget.py / governor.py   # RunBudget + Governor (degrade khi vượt budget)
-│   │   ├── guardrail.py              # has_injection_marker() — rule-based
-│   │   ├── model_registry.py         # Map tên component → (provider, model)
-│   │   └── trace.py                  # Observability passive
-│   │
-│   ├── search/                  # 🔍 Search Agent
-│   │   ├── agent.py                  # run_search() — sufficiency/rewrite loop
-│   │   ├── tools.py                  # _call_s2, score_and_rank, OpenReview fallback
-│   │   ├── guardrails.py / synthesize.py
-│   │   └── state.py                  # SearchParams (mirror PaperSearchRequest)
-│   │
-│   ├── rag/                     # 🤖 RAG Agent
-│   │   ├── agent.py                  # run_rag_ask() — dispatch + grounding check
-│   │   ├── dispatcher.py             # classify_lane() → skill | fast | deliberate
-│   │   ├── planner.py / skills.py / memory.py
-│   │   ├── tools.py                  # retrieve (vector+BM25), rerank, generate, check_grounded
-│   │   ├── ingest.py                 # 📄 fetch PDF → MinerU → chunk (+metadata) → embed → store
-│   │   └── state.py                  # RagAskParams (mirror RagAskRequest)
-│   │
-│   └── tools/                   # Search-source integrations + utility chung
-│       ├── llm_text.py          # LLM router (OpenAI / Gemini)
-│       ├── prompts.py           # System prompts (answerer/verifier/evidence wrapper…)
-│       ├── semantic_scholar.py  # S2 search (đường khác — dùng cho paper_search.py/OpenAlex)
-│       ├── paper_search.py      # OpenReview orchestrator
-│       ├── abstract_tools.py    # translate_abstract_vi, summarize
-│       ├── relevance.py         # Embedding cosine ranking
-│       ├── pdf_fetcher.py       # 📄 Download PDF (arXiv/OpenReview → direct PDF)
-│       ├── mineru_parser.py     # 🧩 MinerU (subprocess) → content_list blocks; canonical_section()
-│       ├── pdf_parser.py        # parse_pdf() → dùng MinerU blocks (giữ API cho /pdf/parse)
-│       ├── chunker.py           # Structure-aware chunking (section thật + page + block_type; bảng = 1 chunk)
-│       ├── rag_store.py         # 🗄️ Supabase vector store (paper_chunks: +page +block_type)
-│       ├── pdf_store.py         # 🪣 Cache PDF + MinerU content_list.json ở bucket paper_pdfs
-│       ├── paper_cache.py       # Supabase cache (abstract_vi, analysis)
-│       └── library.py           # SQLite local library CRUD
-│
-├── 📂 backend/
-│   └── api.py                   # FastAPI — tất cả endpoints
-│
-├── 📂 tests/                    # pytest — mock LLM/embedding/Supabase, không cần network
-│   ├── test_agents_mock.py
-│   ├── test_backend_agent_integration.py
-│   └── test_contract_parity.py
-│
-├── 📂 frontend/src/
-│   ├── App.tsx                  # Root — routing (History API) + shared state
-│   ├── contexts/                # LanguageContext
-│   ├── types/                   # paper.ts (Paper.pdfUrl), chat.ts, rag.ts
-│   ├── services/api.ts          # API calls + mappers
-│   ├── hooks/usePaperRagChat.ts # State machine ingest/ask dùng chung
-│   ├── components/
-│   │   ├── PaperAgentBubble.tsx # 🤖 RAG floating agent
-│   │   ├── rag/MessageParts.tsx # Render message dùng chung (citation, plan, verification badge)
-│   │   ├── NavBar.tsx
-│   │   ├── ResultCard.tsx
-│   │   └── ...
-│   ├── screens/                 # HomeScreen, ResultsScreen, DetailScreen,
-│   │                             # ReaderScreen (📖 đọc PDF + hỏi đáp full-page), ChatScreen
-│   └── i18n/translations.ts    # EN/VI string table
-│
-├── run.py                       # 🚀 Launcher 1 lệnh (backend + frontend song song)
-├── scripts/
-│   ├── download_mineru_models.py # Tải model MinerU (chạy 1 lần)
-│   └── setup_supabase.py         # Tạo bucket paper_pdfs (khi dùng Supabase riêng)
-├── supabase_migration.sql       # SQL migration cho Supabase riêng (paper_cache + paper_chunks)
-├── config.toml                  # (git-ignored) LLM + MinerU config
-└── pyproject.toml               # paper-agent CLI package + deps
-```
-
----
-
-## 🛠️ Tech Stack
-
-<table>
-<tr>
-<th>Layer</th>
-<th>Technology</th>
-</tr>
-<tr>
-<td>
-
-**Frontend**
-
-</td>
-<td>
-
-React 18 · TypeScript · Vite · Tailwind CSS
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Backend**
-
-</td>
-<td>
-
-FastAPI · Python 3.10+ · tenacity · uvicorn
-
-</td>
-</tr>
-<tr>
-<td>
-
-**AI / LLM**
-
-</td>
-<td>
-
-OpenAI GPT-4.1 family · Google Gemini 2.5 family
-
-</td>
-</tr>
-<tr>
-<td>
-
-**RAG**
-
-</td>
-<td>
-
-MinerU (structure-aware PDF parse) · vector cosine + BM25 (RRF) · cross-encoder rerank · grounding verifier
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Paper Sources**
-
-</td>
-<td>
-
-Semantic Scholar · OpenReview · arXiv · OpenAlex · Crossref · DBLP
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Storage**
-
-</td>
-<td>
-
-Supabase chung (paper cache + RAG chunks + PDF bucket) · localStorage + SQLite (dữ liệu cá nhân, local)
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Chạy**
-
-</td>
-<td>
-
-`python run.py` — backend + frontend song song, local, không cần deploy
-
-</td>
-</tr>
-</table>
 
 ---
 
@@ -516,27 +355,76 @@ Supabase chung (paper cache + RAG chunks + PDF bucket) · localStorage + SQLite 
 pytest tests/ -v
 ```
 
-Toàn bộ test **mock LLM / embedding / Supabase / cross-encoder** — không cần API key hay network:
+Toàn bộ test mock LLM, embedding, Supabase, cross-encoder và Notion network/SDK, nên không cần API key thật.
 
-- `test_agents_mock.py` — gọi trực tiếp `run_search()` / `run_rag_ask()` / `ingest_paper()`, test control
-  flow (rewrite loop, dispatcher lane, citation stripping, grounding, metadata chunk).
-- `test_backend_agent_integration.py` — qua `TestClient(app)`, test lớp convert Pydantic↔dataclass.
-- `test_contract_parity.py` — so field giữa Pydantic request model và dataclass `*Params` tương ứng.
+- `tests/test_agents_mock.py` — Search Agent/RAG Agent trực tiếp.
+- `tests/test_backend_agent_integration.py` — FastAPI endpoint qua `TestClient`.
+- `tests/test_contract_parity.py` — parity Pydantic request model ↔ dataclass params.
+- `tests/test_notion_client.py` — Notion wrapper, OAuth local store, payload create/update.
+
+Validate frontend:
+
+```bash
+cd frontend
+npm run build
+```
+
+---
+
+## 🖥️ Chạy thủ công
+
+Backend từ repo root:
+
+```bash
+pip install -e .
+uvicorn backend.api:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Frontend từ `frontend/`:
+
+```bash
+npm install
+npm run dev
+npm run build
+npm run preview
+```
+
+CLI sau khi `pip install -e .`:
+
+```bash
+paper-agent init
+paper-agent search "diffusion medical image segmentation"
+paper-agent major-search --venue iclr --year 2025 --query "retrieval augmented generation"
+```
+
+---
+
+## ⚠️ Giới hạn hiện tại
+
+- Search chính là OpenReview-first, chưa phải search tổng quát trên toàn bộ web học thuật.
+- `/api/papers/search` hiện ép source về `openreview` để giữ UX ổn định.
+- OpenReview `/notes/search` cần keyword; query rỗng hoặc quá chung sẽ ít hữu ích.
+- OpenReview thường chặn anonymous PDF download/iframe; backend sẽ resolve mirror qua arXiv/Semantic Scholar/OpenAlex hoặc fallback abstract.
+- RAG tốt nhất khi parse được PDF. Abstract-only mode chỉ trả lời được những gì có trong abstract/metadata.
+- Notion export là side effect có chủ ý, chỉ chạy khi người dùng bấm nút hoặc gọi endpoint export.
 
 ---
 
 ## 🤝 Contributing
 
-Pull requests are welcome!
+Pull requests nên:
 
-1. Fork repo
-2. Tạo feature branch: `git checkout -b feat/ten-tinh-nang`
-3. Commit: `git commit -m "feat: mô tả ngắn"`
-4. Push & mở PR
+1. Tóm tắt thay đổi hành vi.
+2. Liệt kê command đã verify.
+3. Có screenshot nếu thay đổi UI.
+4. Không commit `.env`, `config.toml`, token/API key, SQLite local data.
+5. Chạy `pytest tests/ -v` cho backend/agent và `npm run build` cho frontend.
 
 **Code style:**
-- Backend: [Ruff](https://docs.astral.sh/ruff/) + [pyright](https://github.com/microsoft/pyright)
-- Frontend: ESLint + TypeScript strict mode
+
+- Python: 4-space indentation, `snake_case`.
+- TypeScript/React: 2-space indentation, component `PascalCase`, function/value `camelCase`.
+- Giữ transport code trong `backend/api.py`; reusable behavior ở `agent/`.
 
 ---
 
