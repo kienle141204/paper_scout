@@ -783,5 +783,80 @@ def test_notion_export_missing_config(monkeypatch):
         notion_export.export_paper_note(notion_export.ExportOptions(paper_id="P1", paper={"paper_id": "P1"}))
 
 
+def test_notion_export_accepts_frontend_paper_shape(monkeypatch):
+    class FakeNotionClient:
+        def __init__(self, *, token, database_id=None, parent_page_id=None):
+            pass
+
+        def upsert_paper_page(self, *, notion_key, title, preview):
+            assert notion_key == "arxiv:2401.00001"
+            assert title == "Frontend Title"
+            assert "# Frontend Title" in preview
+            return notion_export.NotionWriteResult(
+                notion_page_id="page-frontend",
+                created=True,
+                updated=False,
+                preview=preview,
+            )
+
+    monkeypatch.setenv("NOTION_TOKEN", "token")
+    monkeypatch.setenv("NOTION_PARENT_PAGE_ID", "parent")
+    monkeypatch.delenv("NOTION_DATABASE_ID", raising=False)
+    monkeypatch.setattr(notion_export, "NotionPaperClient", FakeNotionClient)
+
+    result = notion_export.export_paper_note(notion_export.ExportOptions(
+        paper_id="P-front",
+        paper={
+            "id": "P-front",
+            "titleEn": "Frontend Title",
+            "sourceIds": {"arxiv": "2401.00001"},
+            "abstractEn": "Abstract from frontend shape.",
+        },
+    ))
+
+    assert result.notion_page_id == "page-frontend"
+
+
+def test_notion_export_uses_oauth_workspace_parent_without_static_token(monkeypatch):
+    saved = []
+
+    class FakeNotionClient:
+        def __init__(self, *, token, database_id=None, parent_page_id=None, workspace_parent=False, known_page_id=None):
+            assert token == "oauth-token"
+            assert database_id is None
+            assert parent_page_id is None
+            assert workspace_parent is True
+            assert known_page_id == "existing-page"
+
+        def upsert_paper_page(self, *, notion_key, title, preview):
+            assert notion_key == "paper_id:P-oauth"
+            return notion_export.NotionWriteResult(
+                notion_page_id="existing-page",
+                created=False,
+                updated=True,
+                preview=preview,
+            )
+
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    monkeypatch.delenv("NOTION_DATABASE_ID", raising=False)
+    monkeypatch.delenv("NOTION_PARENT_PAGE_ID", raising=False)
+    monkeypatch.setattr(notion_export, "get_notion_connection", lambda: {"access_token": "oauth-token"})
+    monkeypatch.setattr(notion_export, "get_export_page", lambda notion_key: "existing-page")
+    monkeypatch.setattr(notion_export, "save_export_page", lambda **kwargs: saved.append(kwargs))
+    monkeypatch.setattr(notion_export, "NotionPaperClient", FakeNotionClient)
+
+    result = notion_export.export_paper_note(notion_export.ExportOptions(
+        paper_id="P-oauth",
+        paper={"paper_id": "P-oauth", "title": "OAuth Paper"},
+    ))
+
+    assert result.updated is True
+    assert saved == [{
+        "notion_key": "paper_id:P-oauth",
+        "notion_page_id": "existing-page",
+        "paper_id": "P-oauth",
+    }]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

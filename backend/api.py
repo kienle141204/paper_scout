@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import html
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
@@ -13,6 +14,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from agent.config import DEFAULT_CONFIG_PATH, load_config
@@ -1264,6 +1266,17 @@ from agent.rag.ingest import IngestRequest as _IngestArgs
 from agent.rag.agent import RagAskParams, run_rag_ask
 from agent.rag.notion_export import ExportOptions, export_paper_note
 from agent.tools.notion_client import NotionConfigError
+from agent.tools.notion_oauth import (
+    NotionOAuthError,
+    authorization_url,
+    consume_state,
+    create_state,
+    delete_connection as delete_notion_connection,
+    exchange_code_for_token,
+    get_connection as get_notion_connection,
+    oauth_config_from_env,
+    save_connection as save_notion_connection,
+)
 
 
 @app.get("/api/agent/status")
@@ -1377,6 +1390,74 @@ class NotionExportRequest(BaseModel):
     target_page_id: str | None = None
     paper: dict[str, Any] | None = None
     qa_history: list[ChatMessageModel] = Field(default_factory=list)
+
+
+@app.get("/api/notion/status")
+def api_notion_status() -> dict[str, Any]:
+    oauth_connection = get_notion_connection()
+    static_token = bool(os.getenv("NOTION_TOKEN", "").strip())
+    oauth_configured = bool(
+        os.getenv("NOTION_OAUTH_CLIENT_ID", "").strip()
+        and os.getenv("NOTION_OAUTH_CLIENT_SECRET", "").strip()
+    )
+    connected = static_token or bool(oauth_connection)
+    return {
+        "configured": static_token or oauth_configured,
+        "connected": connected,
+        "connection_type": "static" if static_token else ("oauth" if oauth_connection else None),
+        "workspace_name": (oauth_connection or {}).get("workspace_name"),
+        "workspace_id": (oauth_connection or {}).get("workspace_id"),
+        "updated_at": (oauth_connection or {}).get("updated_at"),
+    }
+
+
+@app.get("/api/notion/connect")
+def api_notion_connect() -> dict[str, Any]:
+    try:
+        cfg = oauth_config_from_env()
+    except NotionOAuthError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    state = create_state()
+    return {"authorization_url": authorization_url(cfg, state=state)}
+
+
+@app.get("/api/notion/callback")
+def api_notion_callback(code: str | None = None, state: str | None = None, error: str | None = None) -> HTMLResponse:
+    if error:
+        return HTMLResponse(
+            f"<html><body><h2>Notion connection canceled</h2><p>{html.escape(error)}</p></body></html>",
+            status_code=400,
+        )
+    if not code or not state:
+        return HTMLResponse("<html><body><h2>Missing Notion OAuth code/state.</h2></body></html>", status_code=400)
+    if not consume_state(state):
+        return HTMLResponse("<html><body><h2>Invalid or expired Notion OAuth state.</h2></body></html>", status_code=400)
+    try:
+        cfg = oauth_config_from_env()
+        token_response = exchange_code_for_token(cfg, code=code)
+        save_notion_connection(token_response)
+    except NotionOAuthError as e:
+        return HTMLResponse(f"<html><body><h2>Notion connection failed</h2><p>{html.escape(str(e))}</p></body></html>", status_code=502)
+    workspace = html.escape(token_response.get("workspace_name") or "Notion")
+    return HTMLResponse(
+        f"""
+        <html>
+          <body style="font-family: system-ui, sans-serif; padding: 32px;">
+            <h2>Connected to {workspace}</h2>
+            <p>You can close this tab and return to PaperScout.</p>
+            <script>
+              try {{ if (window.opener) window.opener.postMessage({{ type: 'paperscout:notion-connected' }}, '*'); }} catch (e) {{}}
+            </script>
+          </body>
+        </html>
+        """
+    )
+
+
+@app.delete("/api/notion/connection")
+def api_notion_disconnect() -> dict[str, Any]:
+    delete_notion_connection()
+    return {"ok": True}
 
 
 @app.post("/api/papers/export/notion")

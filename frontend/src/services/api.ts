@@ -606,6 +606,36 @@ export async function deleteAllMemory(): Promise<{ ok: boolean }> {
   return res.json()
 }
 
+export interface NotionStatus {
+  configured: boolean
+  connected: boolean
+  connection_type: 'static' | 'oauth' | null
+  workspace_name?: string | null
+  workspace_id?: string | null
+  updated_at?: string | null
+}
+
+export async function getNotionStatus(): Promise<NotionStatus> {
+  const res = await fetch(`${BASE}/api/notion/status`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function getNotionConnectUrl(): Promise<{ authorization_url: string }> {
+  const res = await fetch(`${BASE}/api/notion/connect`)
+  if (!res.ok) {
+    const err: { detail?: string } = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function disconnectNotion(): Promise<{ ok: boolean }> {
+  const res = await fetch(`${BASE}/api/notion/connection`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 export async function exportPaperToNotion(params: {
   paperId: string
   noteType?: 'summary' | 'qa' | 'full_reading_note'

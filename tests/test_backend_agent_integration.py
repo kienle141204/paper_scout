@@ -323,5 +323,144 @@ def test_api_ask_not_configured_returns_503(monkeypatch):
     assert resp.status_code == 503
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Notion export
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_api_notion_export_maps_request_to_agent_and_logs_memory(monkeypatch):
+    from agent.rag.notion_export import ExportResult
+
+    calls = []
+    memory_events = []
+
+    def fake_export(options):
+        calls.append(options)
+        return ExportResult(
+            notion_page_id="page-1",
+            created=True,
+            updated=False,
+            preview="# Paper",
+        )
+
+    monkeypatch.setattr(backend_api, "export_paper_note", fake_export)
+    monkeypatch.setattr(backend_api, "append_memory_event", lambda **kwargs: memory_events.append(kwargs))
+
+    resp = client.post(
+        "/api/papers/export/notion",
+        json={
+            "paper_id": "P1",
+            "note_type": "full_reading_note",
+            "include_qa_history": True,
+            "paper": {"paper_id": "P1", "title": "Paper"},
+            "qa_history": [{"role": "user", "content": "What is the method?"}],
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {
+        "notion_page_id": "page-1",
+        "created": True,
+        "updated": False,
+        "preview": "# Paper",
+    }
+    assert calls[0].paper_id == "P1"
+    assert calls[0].note_type == "full_reading_note"
+    assert calls[0].include_qa_history is True
+    assert calls[0].qa_history == [{"role": "user", "content": "What is the method?"}]
+    assert memory_events[0]["event_type"] == "export_notion"
+    assert memory_events[0]["metadata"] == {"notion_page_id": "page-1", "note_type": "full_reading_note"}
+
+
+def test_api_notion_export_config_error_returns_503(monkeypatch):
+    def fake_export(options):
+        raise backend_api.NotionConfigError("NOTION_TOKEN is not configured.")
+
+    monkeypatch.setattr(backend_api, "export_paper_note", fake_export)
+
+    resp = client.post("/api/papers/export/notion", json={"paper_id": "P1"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "NOTION_TOKEN is not configured."
+
+
+def test_api_notion_export_runtime_error_returns_502(monkeypatch):
+    def fake_export(options):
+        raise RuntimeError("upstream failed")
+
+    monkeypatch.setattr(backend_api, "export_paper_note", fake_export)
+
+    resp = client.post("/api/papers/export/notion", json={"paper_id": "P1"})
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "Notion export failed: upstream failed"
+
+
+def test_api_notion_status_reports_oauth_connection(monkeypatch):
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    monkeypatch.setenv("NOTION_OAUTH_CLIENT_ID", "client")
+    monkeypatch.setenv("NOTION_OAUTH_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(backend_api, "get_notion_connection", lambda: {
+        "workspace_name": "Research",
+        "workspace_id": "workspace-1",
+        "updated_at": "now",
+    })
+
+    resp = client.get("/api/notion/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["configured"] is True
+    assert body["connected"] is True
+    assert body["connection_type"] == "oauth"
+    assert body["workspace_name"] == "Research"
+
+
+def test_api_notion_connect_returns_authorization_url(monkeypatch):
+    from agent.tools.notion_oauth import NotionOAuthConfig
+
+    monkeypatch.setattr(
+        backend_api,
+        "oauth_config_from_env",
+        lambda: NotionOAuthConfig(client_id="client-1", client_secret="secret", redirect_uri="http://localhost:8000/api/notion/callback"),
+    )
+    monkeypatch.setattr(backend_api, "create_state", lambda: "state-1")
+
+    resp = client.get("/api/notion/connect")
+
+    assert resp.status_code == 200
+    url = resp.json()["authorization_url"]
+    assert "https://api.notion.com/v1/oauth/authorize" in url
+    assert "client_id=client-1" in url
+    assert "response_type=code" in url
+    assert "owner=user" in url
+    assert "state=state-1" in url
+
+
+def test_api_notion_callback_exchanges_code_and_saves_connection(monkeypatch):
+    from agent.tools.notion_oauth import NotionOAuthConfig
+
+    saved = []
+    token_response = {
+        "access_token": "token",
+        "workspace_name": "Research",
+        "workspace_id": "workspace-1",
+    }
+    monkeypatch.setattr(backend_api, "consume_state", lambda state: state == "state-1")
+    monkeypatch.setattr(
+        backend_api,
+        "oauth_config_from_env",
+        lambda: NotionOAuthConfig(client_id="client-1", client_secret="secret", redirect_uri="http://localhost:8000/api/notion/callback"),
+    )
+    monkeypatch.setattr(backend_api, "exchange_code_for_token", lambda cfg, *, code: token_response)
+    monkeypatch.setattr(backend_api, "save_notion_connection", lambda response: saved.append(response))
+
+    resp = client.get("/api/notion/callback?code=code-1&state=state-1")
+
+    assert resp.status_code == 200
+    assert "Connected to Research" in resp.text
+    assert saved == [token_response]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

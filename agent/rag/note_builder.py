@@ -20,7 +20,7 @@ def build_paper_note_preview(
     lines = [
         f"# {title}",
         "",
-        "Metadata",
+        "## Metadata",
         f"- Authors: {author_text or 'Unknown'}",
         f"- Year: {paper.get('year') or 'Unknown'}",
         f"- Venue: {paper.get('venue') or paper.get('conference') or 'Unknown'}",
@@ -31,16 +31,16 @@ def build_paper_note_preview(
     ]
     abstract = paper.get("abstract") or paper.get("abstractEn")
     if note_type in ("summary", "full_reading_note") and abstract:
-        lines += ["Summary", abstract[:2000], ""]
+        lines += ["## Summary", abstract[:2000], ""]
     if note_type in ("qa", "full_reading_note") and include_qa_history and qa_history:
-        lines.append("Q&A")
+        lines.append("## Q&A")
         for item in qa_history[-10:]:
             role = item.get("role", "user")
             content = str(item.get("content") or "").strip()
             if content:
                 lines.append(f"- {role}: {content}")
         lines.append("")
-    lines += ["My Notes", ""]
+    lines += ["## My Notes", ""]
     return "\n".join(lines).strip()
 
 

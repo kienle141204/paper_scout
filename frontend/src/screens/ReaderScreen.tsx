@@ -5,7 +5,7 @@ import { usePaperRagChat } from '../hooks/usePaperRagChat'
 import { ReasoningBlock, VerificationBadge, AnswerMeta, MessageContent } from '../components/rag/MessageParts'
 import type { Paper } from '../types/paper'
 import { useLanguage } from '../contexts/LanguageContext'
-import { pdfProxyUrl, resolvePdfUrl } from '../services/api'
+import { exportPaperToNotion, getNotionConnectUrl, getNotionStatus, pdfProxyUrl, resolvePdfUrl } from '../services/api'
 
 interface Props {
   paper: Paper
@@ -33,6 +33,10 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack }: Pro
 
   const messagesRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const [notionStatus, setNotionStatus] = useState<'idle' | 'checking' | 'connecting' | 'saving' | 'saved' | 'error'>('checking')
+  const [notionMessage, setNotionMessage] = useState<string | null>(null)
+  const [notionConnected, setNotionConnected] = useState(false)
+  const [notionWorkspace, setNotionWorkspace] = useState<string | null>(null)
 
   // Resolve an embeddable PDF up-front: undefined = resolving, null = none
   // (show reading view), string = embed via proxy. OpenReview blocks framing +
@@ -58,6 +62,43 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack }: Pro
     if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight
   }, [messages])
 
+  const refreshNotionStatus = async () => {
+    setNotionStatus((current) => current === 'idle' ? 'checking' : current)
+    try {
+      const status = await getNotionStatus()
+      setNotionConnected(status.connected)
+      setNotionWorkspace(status.workspace_name ?? null)
+      setNotionMessage(status.connected ? (status.workspace_name ? `Connected to ${status.workspace_name}` : 'Connected to Notion') : null)
+      setNotionStatus((current) => current === 'checking' || current === 'connecting' ? 'idle' : current)
+    } catch {
+      setNotionConnected(false)
+      setNotionWorkspace(null)
+      setNotionStatus('idle')
+    }
+  }
+
+  useEffect(() => {
+    setNotionStatus('idle')
+    setNotionMessage(null)
+    refreshNotionStatus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paper.id])
+
+  useEffect(() => {
+    refreshNotionStatus()
+    const onFocus = () => refreshNotionStatus()
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'paperscout:notion-connected') refreshNotionStatus()
+    }
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('message', onMessage)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('message', onMessage)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     if (ingestStatus === 'ready') setTimeout(() => inputRef.current?.focus(), 50)
   }, [ingestStatus])
@@ -68,6 +109,62 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack }: Pro
       handleSend()
     }
   }
+
+  const handleExportNotion = async () => {
+    if (notionStatus === 'saving' || notionStatus === 'connecting') return
+    if (!notionConnected) {
+      setNotionStatus('connecting')
+      setNotionMessage(null)
+      try {
+        const { authorization_url } = await getNotionConnectUrl()
+        const popup = window.open(authorization_url, '_blank')
+        if (!popup) window.location.href = authorization_url
+        setNotionMessage('Finish the Notion connection, then return here')
+      } catch (e) {
+        setNotionStatus('error')
+        setNotionMessage(e instanceof Error ? e.message : 'Notion connection failed')
+      }
+      return
+    }
+
+    const qaHistory = messages
+      .filter((msg) => !msg.loading && msg.content.trim())
+      .map((msg) => ({ role: msg.role, content: msg.content }))
+      .slice(-10)
+    const includeQaHistory = qaHistory.some((msg) => msg.role === 'user')
+
+    setNotionStatus('saving')
+    setNotionMessage(null)
+    try {
+      const result = await exportPaperToNotion({
+        paperId: paper.id,
+        noteType: includeQaHistory ? 'full_reading_note' : 'summary',
+        includeQaHistory,
+        paper,
+        qaHistory,
+      })
+      setNotionStatus('saved')
+      setNotionMessage(result.updated ? 'Updated Notion page' : 'Saved to Notion')
+    } catch (e) {
+      setNotionStatus('error')
+      setNotionMessage(e instanceof Error ? e.message : 'Notion export failed')
+    }
+  }
+
+  const notionBusy = notionStatus === 'saving' || notionStatus === 'checking' || notionStatus === 'connecting'
+  const notionIcon = notionStatus === 'saving' || notionStatus === 'checking' || notionStatus === 'connecting' ? 'loader' : notionStatus === 'saved' ? 'check' : notionStatus === 'error' ? 'warning' : 'doc'
+  const notionLabel = notionStatus === 'checking'
+    ? 'Checking'
+    : notionStatus === 'connecting'
+    ? 'Connect'
+    : notionStatus === 'saving'
+    ? 'Saving'
+    : notionStatus === 'saved'
+    ? 'Saved'
+    : notionConnected
+    ? 'Notion'
+    : 'Connect'
+  const notionTitle = notionMessage ?? (notionConnected ? `Save to Notion${notionWorkspace ? ` (${notionWorkspace})` : ''}` : 'Connect Notion')
 
   return (
     <div className="fade-in" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
@@ -84,6 +181,18 @@ export default function ReaderScreen({ paper, saved, onToggleSave, onBack }: Pro
         <div style={{ flex: 1 }} />
         <div style={{ width: 120, flex: 'none' }}>
           <SaveBtn saved={saved} onClick={handleToggleSave} label />
+        </div>
+        <div style={{ width: 118, flex: 'none' }}>
+          <button
+            className={`btn btn-sm ${notionStatus === 'saved' ? 'btn-primary' : 'btn-outline'} w-full`}
+            onClick={handleExportNotion}
+            disabled={notionBusy}
+            title={notionTitle}
+            style={{ opacity: notionBusy ? 0.75 : 1 }}
+          >
+            <Icon name={notionIcon} size={14} style={notionBusy ? { animation: 'spin 1s linear infinite' } : undefined} />
+            {notionLabel}
+          </button>
         </div>
         {paper.pdfUrl && (
           <a href={paper.pdfUrl} target="_blank" rel="noopener noreferrer" className="btn btn-accent btn-sm" style={{ flex: 'none' }}>
